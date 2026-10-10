@@ -1,0 +1,198 @@
+import json
+import os
+import re
+from urllib.parse import urlparse
+
+
+TASK_FIELDS = (
+    "titulo",
+    "habilidades_requeridas",
+    "instrucciones",
+    "objetivo",
+    "restricciones",
+    "entregables",
+    "recursos",
+    "criterios_aceptacion",
+    "modo_entrega",
+    "duracion_estimada_horas",
+    "dificultad",
+)
+TASK_DIFFICULTIES = {"baja", "media", "alta"}
+
+
+def parse_github_pull_request(url):
+    parsed = urlparse(url.strip())
+    parts = [part for part in parsed.path.split("/") if part]
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or len(parts) < 4
+        or parts[2] != "pull"
+        or not re.fullmatch(r"\d+", parts[3])
+    ):
+        raise ValueError(
+            "Introduce un enlace de Pull Request de GitHub "
+            "(https://github.com/propietario/repositorio/pull/123)."
+        )
+
+    owner, repository = parts[0], parts[1]
+    if owner in {".", ".."} or repository in {".", ".."}:
+        raise ValueError("El enlace de GitHub no es válido.")
+
+    return owner, repository.removesuffix(".git"), int(parts[3])
+
+
+def validate_github_code_url(url):
+    parsed = urlparse(url.strip())
+    parts = [part for part in parsed.path.split("/") if part]
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or len(parts) < 2
+        or parts[0] in {".", ".."}
+        or parts[1] in {".", ".."}
+    ):
+        raise ValueError(
+            "Introduce un enlace HTTPS válido a un repositorio o archivo de GitHub."
+        )
+    return url.strip()
+
+
+def parse_github_repository_url(url):
+    validate_github_code_url(url)
+    parts = [part for part in urlparse(url.strip()).path.split("/") if part]
+    return parts[0], parts[1].removesuffix(".git")
+
+
+def _clean_task(task):
+    if not isinstance(task, dict):
+        raise ValueError("Cada tarea generada debe ser un objeto.")
+    cleaned = {}
+    for field in TASK_FIELDS:
+        value = task.get(field, "")
+        if field == "habilidades_requeridas":
+            if isinstance(value, str):
+                value = value.split(",")
+            if not isinstance(value, list):
+                raise ValueError(
+                    "Las habilidades requeridas deben ser una lista."
+                )
+            cleaned[field] = [
+                str(skill).strip()
+                for skill in value
+                if str(skill).strip()
+            ]
+        elif field == "duracion_estimada_horas":
+            if isinstance(value, bool):
+                raise ValueError(
+                    "La duración estimada debe ser un número entero de horas."
+                )
+            if isinstance(value, int):
+                cleaned[field] = value
+            elif isinstance(value, float) and value.is_integer():
+                cleaned[field] = int(value)
+            elif isinstance(value, str) and value.isdigit():
+                cleaned[field] = int(value)
+            else:
+                raise ValueError(
+                    "La duración estimada debe ser un número entero de horas."
+                )
+        else:
+            cleaned[field] = str(value or "").strip()
+    missing = [
+        field for field in TASK_FIELDS
+        if not cleaned[field]
+    ]
+    if missing:
+        raise ValueError(
+            "Gemini dejó campos obligatorios vacíos: "
+            + ", ".join(missing)
+        )
+    if not cleaned["habilidades_requeridas"]:
+        raise ValueError(
+            "Gemini debe asignar al menos una habilidad requerida por tarea."
+        )
+    if cleaned["dificultad"].casefold() not in TASK_DIFFICULTIES:
+        raise ValueError(
+            "La dificultad debe ser Baja, Media o Alta."
+        )
+    cleaned["dificultad"] = cleaned["dificultad"].capitalize()
+    if not 1 <= cleaned["duracion_estimada_horas"] <= 8:
+        raise ValueError(
+            "La duración estimada debe ser de 1 a 8 horas para una persona."
+        )
+    return cleaned
+
+
+def build_project_task_prompt(title, description):
+    return f"""
+Analiza el título y la descripción del proyecto y divídelo en tareas de
+desarrollo de software independientes, concretas y verificables. Cada tarea
+debe poder completarla una sola persona con las habilidades requeridas.
+
+Mantén cada tarea en un tamaño asequible: estima esfuerzo individual en horas,
+limita cada tarea a un máximo de 8 horas de trabajo y divídela en tareas más
+pequeñas si supera ese límite. No confundas horas de trabajo con días
+calendario. Asigna una dificultad realista: Baja, Media o Alta; evita que una
+tarea sea amplia o dependa de varias personas. Ordena las tareas en el orden
+lógico de implementación y evita duplicidades.
+
+Devuelve exclusivamente JSON válido con esta estructura:
+{{
+  "tasks": [
+    {{
+      "titulo": "Título breve y concreto",
+      "habilidades_requeridas": ["Python"],
+      "instrucciones": "Pasos concretos y acotados para implementar la tarea",
+      "objetivo": "Resultado verificable esperado",
+      "restricciones": "Límites técnicos o condiciones que deben respetarse",
+      "entregables": "Archivos, cambios o evidencias que se deben entregar",
+      "recursos": "Documentación, herramientas o dependencias útiles",
+      "criterios_aceptacion": "Condiciones observables para aceptar el trabajo",
+      "modo_entrega": "Pull Request a GitHub; indicar qué debe incluir",
+      "duracion_estimada_horas": 4,
+      "dificultad": "Media"
+    }}
+  ]
+}}
+
+Genera al menos una tarea y completa todos los campos de cada una. Las
+habilidades deben ser una lista no vacía. La duración estimada debe ser un
+número entero de horas de trabajo para una persona, entre 1 y 8. Usa español.
+No inventes nombres de repositorios, URLs ni información que no aparezca en el
+proyecto; si no hay un repositorio definido, indícalo en modo_entrega.
+
+Título del proyecto: {title}
+Descripción del proyecto: {description}
+""".strip()
+
+
+def generate_project_tasks(title, description):
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "Falta configurar GEMINI_API_KEY en los secretos del servidor."
+        )
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        contents=build_project_task_prompt(title, description),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json"
+        ),
+    )
+    if not response.text:
+        raise RuntimeError("Gemini devolvió una respuesta vacía.")
+    try:
+        result = json.loads(response.text)
+    except json.JSONDecodeError as error:
+        raise ValueError("Gemini no devolvió un JSON válido.") from error
+
+    tasks = result.get("tasks") if isinstance(result, dict) else None
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("Gemini no devolvió una lista de tareas.")
+    return [_clean_task(task) for task in tasks]
