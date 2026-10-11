@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <script>
+      let loaded = false;
+
+      function send(type, fields = {}) {
+        window.parent.postMessage({
+          isStreamlitMessage: true,
+          type,
+          ...fields
+        }, "*");
+      }
+
+      function sendValue(value) {
+        send("streamlit:setComponentValue", {
+          value,
+          dataType: "json"
+        });
+      }
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== window.parent) return;
+        const message = event.data;
+        if (!message || message.type !== "streamlit:render") return;
+
+        const args = message.args || {};
+        const storageKey = args.storage_key;
+        if (!storageKey) return;
+
+        if (!loaded) {
+          loaded = true;
+          try {
+            const stored = window.localStorage.getItem(storageKey);
+            sendValue({
+              storage_key: storageKey,
+              value: stored ? JSON.parse(stored) : { auth: null, widgets: {} }
+            });
+          } catch (error) {
+            sendValue({
+              storage_key: storageKey,
+              value: { auth: null, widgets: {} },
+              error: String(error)
+            });
+          }
+        }
+
+        if (args.payload !== null && args.payload !== undefined) {
+          try {
+            window.localStorage.setItem(
+              storageKey,
+              JSON.stringify(args.payload)
+            );
+          } catch (error) {
+            console.error("No se pudo guardar el estado en localStorage.", error);
+            sendValue({
+              storage_key: storageKey,
+              value: args.payload,
+              error: String(error)
+            });
+          }
+        }
+
+        send("streamlit:setFrameHeight", { height: 0 });
+      });
+
+      send("streamlit:componentReady", { apiVersion: 1 });
+    </script>
+  </body>
+</html>

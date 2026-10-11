@@ -138,6 +138,8 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         self.assertIn('"criterios_aceptacion"', prompt)
         self.assertIn('"restricciones"', prompt)
         self.assertIn('"entregables"', prompt)
+        self.assertIn('"repositorio_url"', prompt)
+        self.assertIn("no la pongas en modo_entrega", prompt)
 
     @patch("google.genai.Client")
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"})
@@ -169,6 +171,44 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             call["config"].response_mime_type,
             "application/json",
         )
+
+    @patch("google.genai.Client")
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"})
+    def test_routes_repository_in_project_description_to_destination_field(
+        self,
+        client_class,
+    ):
+        client = client_class.return_value
+        client.models.generate_content.return_value.text = json.dumps({
+            "tasks": [{
+                "titulo": "Crear formulario",
+                "habilidades_requeridas": ["Streamlit"],
+                "instrucciones": "Crear y validar el formulario.",
+                "objetivo": "Formulario funcional.",
+                "restricciones": "No usar datos externos.",
+                "entregables": "Formulario y pruebas.",
+                "recursos": "Documentación de Streamlit.",
+                "criterios_aceptacion": "Campos validados.",
+                "modo_entrega": (
+                    "Pull Request en "
+                    "https://github.com/example/project/pulls."
+                ),
+                "duracion_estimada_horas": 3,
+                "dificultad": "Baja",
+            }],
+        })
+
+        tasks = generate_project_tasks(
+            "App",
+            "Repositorio del proyecto: "
+            "https://github.com/example/project/pulls",
+        )
+
+        self.assertEqual(
+            tasks[0]["repositorio_url"],
+            "https://github.com/example/project",
+        )
+        self.assertNotIn("github.com", tasks[0]["modo_entrega"])
 
 
 if __name__ == "__main__":

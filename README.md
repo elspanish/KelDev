@@ -20,11 +20,13 @@ las tareas manualmente.
 
 ## Preparar Supabase y GitHub
 
-1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La primera migración
-   crea `profiles`, `projects`, `tasks` y `contributions` si faltan; si ya
-   existen, asegúrate de que conservan sus columnas base y tipos compatibles.
-   Las migraciones posteriores añaden columnas, RPC transaccionales, tablas de
-   revisión y RLS.
+1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La migración única
+   `supabase/migrations/20261013100000_launch_schema.sql` crea las tablas base
+   si faltan y completa las tablas preexistentes:
+   `project_modules.project_id` conserva el tipo `bigint` y su relación con
+   `projects`, mientras que las asignaciones y revisiones reciben los campos y
+   estados que usa el flujo de trabajo. Ejecuta el comando antes de iniciar la
+   aplicación.
 2. Despliega las funciones:
    `supabase functions deploy github-webhook` y
    `supabase functions deploy check-pull-request`.
@@ -51,10 +53,12 @@ las tareas manualmente.
 
 El webhook verifica la firma HMAC de GitHub. En el flujo directo, la PR se
 consulta al registrarla y el webhook detecta los cierres posteriores. En el
-flujo por capas, se asignan dos revisiones independientes; al obtener dos
-aceptaciones, el creador registra la PR final al repositorio destino indicado
-en la tarea y la fusiona. Solo el merge confirmado por GitHub completa la tarea
-y concede la puntuación configurada (por defecto, 5 × 100 puntos, una sola
+flujo por capas se asignan hasta dos revisiones independientes; si no hay
+revisores disponibles o vencen sin reemplazo, la entrega se escala al creador
+para evitar bloquear el trabajo. Después, el creador registra la PR final al
+repositorio destino indicado en la tarea y la fusiona. Solo el merge confirmado
+por GitHub completa la tarea y concede la puntuación configurada (por defecto,
+5 × 100 puntos, una sola
 vez). Los enlaces de PR directa y de PR final deben corresponder al repositorio
 destino de la tarea.
 
@@ -91,7 +95,9 @@ proponente lo cambie en esa tarea.
 
 Gemini recibe solo el título y la descripción del proyecto y devuelve tareas
 editables con estimación de hasta 8 horas por persona y dificultad
-Baja/Media/Alta. Al crear un proyecto también se puede publicar solo una lista
+Baja/Media/Alta. Si incluyes la URL de GitHub en la descripción, se asigna
+automáticamente como repositorio destino de cada tarea, separada del modo de
+entrega. Al crear un proyecto también se puede publicar solo una lista
 de módulos: los colaboradores compatibles reclaman un módulo, proponen tareas
 completas y el creador aprueba o devuelve la propuesta antes de publicarlas.
 La URL del repositorio destino es obligatoria para nuevas tareas y debe
@@ -109,6 +115,13 @@ de GitHub directamente. La creación de la PR final también se hace en GitHub
 por el creador; el webhook confirma su merge.
 La interfaz utiliza un tema claro y muestra la ficha completa de la tarea al
 colaborador asignado y a quienes la revisan.
+Al iniciar sesión, el perfil carga desde Supabase las habilidades, tareas y
+módulos asignados y los proyectos propios que aún tienen trabajo pendiente.
+Los borradores de los widgets y la sesión de Supabase se guardan en
+`localStorage` del navegador para recuperarlos al recargar la página. Las
+contraseñas nunca se guardan allí; cerrar sesión elimina los tokens persistidos.
+Los detalles técnicos de fallos se registran en el servidor; la interfaz no
+expone excepciones de Supabase ni mensajes de error crudos.
 
 ## Pruebas
 

@@ -99,6 +99,10 @@ def _clean_task(task):
                 )
         else:
             cleaned[field] = str(value or "").strip()
+    repository_url = str(task.get("repositorio_url") or "").strip()
+    cleaned["repositorio_url"] = (
+        validate_github_code_url(repository_url) if repository_url else ""
+    )
     missing = [
         field for field in TASK_FIELDS
         if not cleaned[field]
@@ -149,7 +153,8 @@ Devuelve exclusivamente JSON válido con esta estructura:
       "entregables": "Archivos, cambios o evidencias que se deben entregar",
       "recursos": "Documentación, herramientas o dependencias útiles",
       "criterios_aceptacion": "Condiciones observables para aceptar el trabajo",
-      "modo_entrega": "Pull Request a GitHub; indicar qué debe incluir",
+      "modo_entrega": "Pull Request a GitHub; indicar qué debe incluir, sin URL",
+      "repositorio_url": "URL del repositorio destino de GitHub",
       "duracion_estimada_horas": 4,
       "dificultad": "Media"
     }}
@@ -160,7 +165,11 @@ Genera al menos una tarea y completa todos los campos de cada una. Las
 habilidades deben ser una lista no vacía. La duración estimada debe ser un
 número entero de horas de trabajo para una persona, entre 1 y 8. Usa español.
 No inventes nombres de repositorios, URLs ni información que no aparezca en el
-proyecto; si no hay un repositorio definido, indícalo en modo_entrega.
+proyecto. Si la descripción incluye una URL de GitHub, copia la URL base del
+repositorio (https://github.com/propietario/repositorio) en repositorio_url
+para todas las tareas y no la pongas en modo_entrega. Usa modo_entrega solo
+para explicar qué cambios, pruebas y evidencias debe incluir la Pull Request.
+Si la descripción no incluye un repositorio, deja repositorio_url vacío.
 
 Título del proyecto: {title}
 Descripción del proyecto: {description}
@@ -195,4 +204,44 @@ def generate_project_tasks(title, description):
     tasks = result.get("tasks") if isinstance(result, dict) else None
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("Gemini no devolvió una lista de tareas.")
-    return [_clean_task(task) for task in tasks]
+    cleaned_tasks = [_clean_task(task) for task in tasks]
+    repository_url = _github_repository_from_description(description)
+    if repository_url:
+        for task in cleaned_tasks:
+            task["repositorio_url"] = repository_url
+            task["modo_entrega"] = re.sub(
+                r"\s+([.,;:])",
+                r"\1",
+                _remove_github_urls(task["modo_entrega"]),
+            ).strip(" \t\r\n,;:.!:-")
+            if not task["modo_entrega"]:
+                task["modo_entrega"] = (
+                    "Pull Request de GitHub con los cambios y pruebas "
+                    "correspondientes."
+                )
+    return cleaned_tasks
+
+
+def _github_repository_from_description(description):
+    urls = re.findall(
+        r"https://github\.com/[^\s<>\"']+",
+        description,
+        flags=re.IGNORECASE,
+    )
+    for url in urls:
+        candidate = url.rstrip(".,;:!?)")
+        try:
+            owner, repository = parse_github_repository_url(candidate)
+        except ValueError:
+            continue
+        return f"https://github.com/{owner}/{repository}"
+    return ""
+
+
+def _remove_github_urls(value):
+    return re.sub(
+        r"https://github\.com/[^\s<>\"']+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )

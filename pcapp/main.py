@@ -1,7 +1,14 @@
-import streamlit as st
+import logging
 import os
+import sys
+
+import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client
+from browser_storage import (
+    build_browser_storage_payload,
+    persistent_browser_storage,
+)
 from integrations import (
     generate_project_tasks,
     parse_github_pull_request,
@@ -13,6 +20,125 @@ REVIEW_MODE_LABELS = {"direct": "Directa", "layered": "Por capas"}
 REVIEW_MODE_VALUES = {
     label: value for value, label in REVIEW_MODE_LABELS.items()
 }
+logger = logging.getLogger(__name__)
+
+
+def report_problem(context):
+    if sys.exc_info()[0] is not None:
+        logger.exception(
+            "A platform operation could not be completed: %s", context
+        )
+    else:
+        logger.warning("A platform operation could not be completed: %s", context)
+    st.info(
+        "No se pudo completar la operación. Revisa los datos e inténtalo "
+        "de nuevo; si persiste, contacta con soporte."
+    )
+
+
+def invalidate_user_overview():
+    st.session_state.pop("overview_user_id", None)
+
+
+def load_user_overview(user_id):
+    profile_response = (
+        supabase.table("profiles")
+        .select(
+            "email,nombre,descripcion,habilidades,reputacion,"
+            "tareas_completadas"
+        )
+        .eq("id", user_id)
+        .execute()
+    )
+    if not profile_response.data:
+        supabase.table("profiles").insert({
+            "id": user_id,
+            "email": st.session_state.user.email or "",
+            "nombre": (
+                getattr(st.session_state.user, "user_metadata", None) or {}
+            ).get("nombre", ""),
+        }).execute()
+        profile_response = (
+            supabase.table("profiles")
+            .select(
+                "email,nombre,descripcion,habilidades,reputacion,"
+                "tareas_completadas"
+            )
+            .eq("id", user_id)
+            .execute()
+        )
+
+    assigned_tasks = (
+        supabase.table("tasks")
+        .select("*")
+        .eq("asignado_a", user_id)
+        .execute()
+        .data
+        or []
+    )
+    assigned_modules = (
+        supabase.table("project_modules")
+        .select("id,project_id,titulo,estado,deadline_at")
+        .eq("asignado_a", user_id)
+        .execute()
+        .data
+        or []
+    )
+    projects = (
+        supabase.table("projects")
+        .select("id,titulo,descripcion,created_at,review_mode")
+        .eq("owner_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+        or []
+    )
+    project_ids = [project["id"] for project in projects]
+    tasks_by_project = {}
+    modules_by_project = {}
+    if project_ids:
+        for task in (
+            supabase.table("tasks")
+            .select("project_id,estado")
+            .in_("project_id", project_ids)
+            .execute()
+            .data
+            or []
+        ):
+            tasks_by_project.setdefault(task["project_id"], []).append(
+                task["estado"]
+            )
+        for module in (
+            supabase.table("project_modules")
+            .select("project_id,estado")
+            .in_("project_id", project_ids)
+            .execute()
+            .data
+            or []
+        ):
+            modules_by_project.setdefault(module["project_id"], []).append(
+                module["estado"]
+            )
+
+    active_projects = [
+        project
+        for project in projects
+        if any(
+            state != "completada"
+            for state in tasks_by_project.get(project["id"], [])
+        )
+        or any(
+            state != "completado"
+            for state in modules_by_project.get(project["id"], [])
+        )
+    ]
+    return {
+        "profile": profile_response.data[0] if profile_response.data else None,
+        "assigned_tasks": assigned_tasks,
+        "assigned_modules": assigned_modules,
+        "projects": projects,
+        "active_projects": active_projects,
+    }
 
 
 def render_task_details(task):
@@ -142,16 +268,87 @@ st.markdown(
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
+
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.info(
+        "Configura SUPABASE_URL y SUPABASE_KEY en los secretos de la "
+        "aplicación para habilitar el acceso."
+    )
+    st.stop()
+
 if "supabase_client" not in st.session_state:
-    st.session_state.supabase_client = get_supabase()
+    try:
+        st.session_state.supabase_client = get_supabase()
+    except Exception:
+        report_problem("No se pudo inicializar Supabase")
+        st.stop()
 supabase = st.session_state.supabase_client
 
 # 3. Estado de la sesión
+if "_browser_storage_loaded" not in st.session_state:
+    storage_payload = None
+else:
+    try:
+        current_auth_session = supabase.auth.get_session()
+    except Exception:
+        report_problem("Lectura de la sesión persistente")
+        storage_payload = None
+    else:
+        storage_payload = build_browser_storage_payload(
+            st.session_state,
+            current_auth_session,
+        )
+browser_storage_result = persistent_browser_storage(
+    "plataforma-dev-browser-state",
+    storage_payload,
+)
+if (
+    isinstance(browser_storage_result, dict)
+    and browser_storage_result.get("error")
+):
+    st.warning(
+        "No se pudo leer o guardar la sesión y los borradores en el "
+        "almacenamiento local de este navegador."
+    )
+if (
+    not st.session_state.get("_browser_storage_loaded")
+    and isinstance(browser_storage_result, dict)
+):
+    stored_payload = browser_storage_result.get("value") or {}
+    if not isinstance(stored_payload, dict):
+        stored_payload = {}
+    stored_widgets = stored_payload.get("widgets") or {}
+    if isinstance(stored_widgets, dict):
+        for key, value in stored_widgets.items():
+            if isinstance(key, str) and not key.startswith("_"):
+                st.session_state[key] = value
+    st.session_state["_browser_storage_loaded"] = True
+    stored_auth = stored_payload.get("auth")
+    if (
+        isinstance(stored_auth, dict)
+        and stored_auth.get("access_token")
+        and stored_auth.get("refresh_token")
+    ):
+        try:
+            supabase.auth.set_session(
+                stored_auth["access_token"],
+                stored_auth["refresh_token"],
+            )
+        except Exception:
+            report_problem("Recuperación de la sesión persistente")
+
 if "user" not in st.session_state:
-    st.session_state.user = None
+    try:
+        restored_session = supabase.auth.get_session()
+        st.session_state.user = (
+            restored_session.user if restored_session else None
+        )
+    except Exception:
+        report_problem("No se pudo recuperar la sesión de Supabase")
+        st.session_state.user = None
 
 if st.session_state.user is None and st.query_params.get("code"):
     try:
@@ -161,8 +358,8 @@ if st.session_state.user is None and st.query_params.get("code"):
         st.session_state.user = auth_response.user
         st.query_params.clear()
         st.rerun()
-    except Exception as e:
-        st.error(f"No se pudo completar el inicio de sesión con GitHub: {e}")
+    except Exception:
+        report_problem("No se pudo completar el inicio de sesión con GitHub")
 
 # ---------------------------------------------------------
 # PANTALLA 1: AUTENTICACIÓN (LOGIN / REGISTRO)
@@ -185,8 +382,8 @@ if st.session_state.user is None:
                 type="primary",
                 use_container_width=True,
             )
-        except Exception as e:
-            st.error(f"Error al iniciar sesión con GitHub: {e}")
+        except Exception:
+            report_problem("Inicio de sesión con GitHub")
 
     tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
 
@@ -204,11 +401,8 @@ if st.session_state.user is None:
                     st.session_state.user = res.user
                     st.success("Sesión iniciada.")
                     st.rerun()
-                except Exception as e:
-                    st.error(
-                        "Error al iniciar sesión. Revisa tus credenciales "
-                        f"o confirma tu correo. Detalle: {e}"
-                    )
+                except Exception:
+                    report_problem("Inicio de sesión")
 
     with tab_registro:
         with st.container(border=True):
@@ -235,14 +429,26 @@ if st.session_state.user is None:
                         "tu correo antes de entrar. Tu perfil se crea "
                         "automáticamente."
                     )
-                except Exception as e:
-                    st.error(f"Error al registrarse: {e}")
+                except Exception:
+                    report_problem("Registro de usuario")
 
 # ---------------------------------------------------------
 # PANTALLA 2: DASHBOARD PRINCIPAL
 # ---------------------------------------------------------
 else:
     usuario_activo = st.session_state.user.id
+    if st.session_state.get("overview_user_id") != usuario_activo:
+        try:
+            st.session_state.user_overview = load_user_overview(usuario_activo)
+        except Exception:
+            report_problem("Carga de información de la cuenta")
+            st.session_state.user_overview = {
+                "assigned_tasks": [],
+                "assigned_modules": [],
+                "projects": [],
+                "active_projects": [],
+            }
+        st.session_state.overview_user_id = usuario_activo
 
     opciones = {
         "Mi Perfil": "Mi Perfil",
@@ -282,10 +488,12 @@ else:
         if st.button("Cerrar sesión", use_container_width=True):
             try:
                 supabase.auth.sign_out()
-            except Exception as e:
-                st.error(f"No se pudo cerrar la sesión: {e}")
+            except Exception:
+                report_problem("Cierre de sesión")
             else:
                 st.session_state.user = None
+                st.session_state.pop("overview_user_id", None)
+                st.session_state.pop("user_overview", None)
                 st.rerun()
 
     opcion = st.session_state.opcion_actual
@@ -305,11 +513,11 @@ else:
                 .eq("id", usuario_activo)
                 .execute()
             )
-        except Exception as e:
-            st.error(f"No se pudo cargar tu perfil: {e}")
+        except Exception:
+            report_problem("Carga del perfil")
         else:
             if not perfil_res.data:
-                st.error("No se encontró tu perfil.")
+                st.info("Tu perfil todavía no está disponible.")
             else:
                 perfil = perfil_res.data[0]
                 habilidades_raw = perfil.get("habilidades") or {}
@@ -340,6 +548,47 @@ else:
                             "Tareas completadas",
                             int(perfil.get("tareas_completadas") or 0),
                         )
+
+                st.divider()
+                overview = st.session_state.get("user_overview") or {}
+                st.subheader("Tu trabajo asignado")
+                assigned_tasks = overview.get("assigned_tasks", [])
+                if assigned_tasks:
+                    for assigned_task in assigned_tasks:
+                        with st.expander(
+                            f"{assigned_task.get('titulo') or 'Tarea'} · "
+                            f"{assigned_task.get('estado') or 'sin estado'}"
+                        ):
+                            render_task_details(assigned_task)
+                else:
+                    st.info("No tienes tareas asignadas.")
+
+                assigned_modules = overview.get("assigned_modules", [])
+                if assigned_modules:
+                    st.markdown("**Módulos asignados**")
+                    for module in assigned_modules:
+                        st.write(
+                            f"**{module.get('titulo') or 'Módulo'}** · "
+                            f"{module.get('estado') or 'sin estado'} · "
+                            f"plazo: {module.get('deadline_at') or '—'}"
+                        )
+
+                st.subheader("Tus proyectos en marcha")
+                active_projects = overview.get("active_projects", [])
+                if active_projects:
+                    for project in active_projects:
+                        st.write(
+                            f"**{project['titulo']}** · "
+                            f"{project.get('descripcion') or 'Sin descripción'}"
+                        )
+                else:
+                    st.info("No tienes proyectos con tareas pendientes.")
+                if st.button(
+                    "Actualizar información de la cuenta",
+                    key="refresh_account_overview",
+                ):
+                    st.session_state.pop("overview_user_id", None)
+                    st.rerun()
 
                 st.divider()
                 st.subheader("Tus habilidades")
@@ -392,11 +641,10 @@ else:
                                         .execute()
                                     )
                                     st.success("Nombre actualizado.")
+                                    invalidate_user_overview()
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(
-                                        f"No se pudo actualizar el nombre: {e}"
-                                    )
+                                except Exception:
+                                    report_problem("Actualización del perfil")
 
                 with col_agregar:
                     with st.expander("Añadir habilidades"):
@@ -434,11 +682,10 @@ else:
                                         .execute()
                                     )
                                     st.success("Habilidades actualizadas.")
+                                    invalidate_user_overview()
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(
-                                        f"No se pudieron actualizar las habilidades: {e}"
-                                    )
+                                except Exception:
+                                    report_problem("Actualización de habilidades")
 
     # --- OPCIÓN 1: CREAR PROYECTO Y TAREAS ---
     elif opcion == "Crear Proyecto":
@@ -451,9 +698,24 @@ else:
                 "Define el proyecto y sus tareas, o genera un borrador editable "
                 "con Gemini antes de publicarlo."
             )
-            proj_titulo = st.text_input("Nombre del proyecto", key="project_title")
+            proj_titulo = st.text_input(
+                "Nombre del proyecto",
+                key="project_title",
+                placeholder=(
+                    "Ej.: Plataforma para organizar voluntariado y tareas "
+                    "comunitarias"
+                ),
+            )
             proj_desc = st.text_area(
-                "Descripción del proyecto", key="project_description"
+                "Descripción del proyecto",
+                key="project_description",
+                placeholder=(
+                    "Explica el problema, quién lo usará, las funciones "
+                    "principales, tecnologías o restricciones y cómo sabrás "
+                    "que funciona. Incluye aquí el repositorio destino de "
+                    "GitHub (p. ej. https://github.com/usuario/repositorio) "
+                    "para que la IA lo asigne automáticamente a las tareas."
+                ),
             )
             review_mode_label = st.selectbox(
                 "Flujo de entrega",
@@ -621,9 +883,10 @@ else:
                                 },
                             ).execute()
                             st.success("Proyecto y módulos publicados.")
+                            invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"No se pudieron publicar los módulos: {e}")
+                            report_problem("Publicación de módulos")
                 st.stop()
 
             if "project_task_drafts" not in st.session_state:
@@ -680,7 +943,7 @@ else:
                     )
                     st.rerun()
                 except Exception as e:
-                    st.error(f"No se pudieron generar las tareas: {e}")
+                    report_problem("Generación de tareas")
 
             st.markdown("#### Tareas del proyecto (editables)")
             st.caption(
@@ -909,9 +1172,10 @@ else:
                             }]
                             st.session_state.project_task_draft_version += 1
                             st.session_state.clear_project_form = True
+                            invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"No se pudo guardar el proyecto: {e}")
+                            report_problem("Guardado del proyecto")
 
     # --- OPCIÓN 2: COLABORAR ---
     elif opcion == "Colaborar":
@@ -926,7 +1190,7 @@ else:
                     .execute()
                 )
             except Exception as e:
-                st.error(f"No se pudieron cargar tus tareas: {e}")
+                report_problem("Carga de tareas asignadas")
             else:
                 if res_pendiente.data:
                     tarea_actual = res_pendiente.data[0]
@@ -962,9 +1226,7 @@ else:
                                 or "Se solicitaron cambios en la última entrega."
                             )
                     except Exception as e:
-                        st.error(
-                            f"No se pudo cargar el feedback de la entrega: {e}"
-                        )
+                        report_problem("Carga de comentarios de entrega")
                 else:
                     try:
                         active_modules = (
@@ -975,7 +1237,7 @@ else:
                             .execute()
                         )
                     except Exception as e:
-                        st.error(f"No se pudo comprobar tu módulo asignado: {e}")
+                        report_problem("Carga de módulos asignados")
                     else:
                         if active_modules.data:
                             module_title = active_modules.data[0]["titulo"]
@@ -999,9 +1261,7 @@ else:
                                     or []
                                 )
                             except Exception as e:
-                                st.error(
-                                    f"No se pudieron buscar tareas compatibles: {e}"
-                                )
+                                report_problem("Búsqueda de tareas compatibles")
                             else:
                                 if not compatible:
                                     st.info(
@@ -1026,13 +1286,10 @@ else:
                                                 st.success(
                                                     f"Se te asignó '{task['titulo']}'."
                                                 )
+                                                invalidate_user_overview()
                                                 st.rerun()
                                             except Exception as e:
-                                                st.error(
-                                                    "No se pudo asignar la tarea. "
-                                                    f"Puede que otro colaborador ya "
-                                                    f"la haya aceptado: {e}"
-                                                )
+                                                report_problem("Asignación de tarea")
 
     # --- REDACTAR TAREAS PARA UN MÓDULO ---
     elif opcion == "Redactar tareas":
@@ -1049,7 +1306,7 @@ else:
                 .execute()
             )
         except Exception as e:
-            st.error(f"No se pudo cargar tu módulo: {e}")
+            report_problem("Carga de módulo asignado")
             assigned_modules = None
         if assigned_modules and assigned_modules.data:
             module = assigned_modules.data[0]
@@ -1075,7 +1332,7 @@ else:
                         or "El creador solicitó cambios."
                     )
             except Exception as e:
-                st.error(f"No se pudo cargar la respuesta del creador: {e}")
+                report_problem("Carga de respuesta del creador")
             draft_key = f"module_task_drafts_{module['id']}"
             version_key = f"module_task_draft_version_{module['id']}"
             if draft_key not in st.session_state:
@@ -1234,9 +1491,10 @@ else:
                             ],
                         }]
                         st.session_state[version_key] += 1
+                        invalidate_user_overview()
                         st.rerun()
                     except Exception as e:
-                        st.error(f"No se pudo enviar la propuesta: {e}")
+                        report_problem("Envío de propuesta")
         else:
             try:
                 own_proposals = (
@@ -1270,13 +1528,13 @@ else:
                         if proposal.get("feedback"):
                             st.warning(proposal["feedback"])
             except Exception as e:
-                st.error(f"No se pudo cargar el estado de tus propuestas: {e}")
+                report_problem("Carga de propuestas")
             try:
                 compatible_modules = (
                     supabase.rpc("find_compatible_modules").execute().data or []
                 )
             except Exception as e:
-                st.error(f"No se pudieron buscar módulos compatibles: {e}")
+                report_problem("Búsqueda de módulos compatibles")
                 compatible_modules = []
             if not compatible_modules:
                 st.info(
@@ -1302,9 +1560,10 @@ else:
                                 {"p_module_id": module["id"]},
                             ).execute()
                             st.success("El módulo se te ha asignado.")
+                            invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"No se pudo asignar el módulo: {e}")
+                            report_problem("Asignación de módulo")
 
     # --- OPCIÓN 3: ENTREGAR TAREA ---
     elif opcion == "Entregar Tarea":
@@ -1326,7 +1585,7 @@ else:
                     .execute()
                 )
             except Exception as e:
-                st.error(f"No se pudo cargar tu tarea: {e}")
+                report_problem("Carga de tarea asignada")
             else:
                 if not res_tarea.data:
                     st.info("No tienes tareas en progreso para entregar.")
@@ -1351,7 +1610,10 @@ else:
                         )
                         submit_label = "Enviar Pull Request"
                     if task_review_mode not in {"direct", "layered"}:
-                        st.error("La tarea no tiene un flujo de revisión válido.")
+                        st.info(
+                            "Esta tarea no se puede entregar hasta que el "
+                            "creador configure un flujo de revisión válido."
+                        )
                     if st.button(
                         submit_label,
                         type="primary",
@@ -1424,16 +1686,20 @@ else:
                                             "notificará el merge automáticamente."
                                         )
                                 except Exception as e:
+                                    report_problem(
+                                        "Consulta inicial del estado en GitHub"
+                                    )
                                     st.warning(
                                         "La Pull Request se registró, pero no se "
                                         "pudo consultar su estado inicial. El "
-                                        f"webhook detectará cambios futuros: {e}"
+                                        "webhook detectará cambios futuros."
                                     )
+                            invalidate_user_overview()
                             st.rerun()
                         except ValueError as e:
-                            st.error(str(e))
+                            st.warning(str(e))
                         except Exception as e:
-                            st.error(f"No se pudo enviar la entrega: {e}")
+                            report_problem("Envío de entrega")
 
     # --- REVISIONES ENTRE COLABORADORES ---
     elif opcion == "Revisar tareas":
@@ -1533,13 +1799,14 @@ else:
                                     },
                                 ).execute()
                                 st.success("Revisión guardada.")
+                                invalidate_user_overview()
                                 st.rerun()
                             except ValueError as e:
-                                st.error(str(e))
+                                st.warning(str(e))
                             except Exception as e:
-                                st.error(f"No se pudo guardar la revisión: {e}")
+                                report_problem("Guardado de revisión")
         except Exception as e:
-            st.error(f"No se pudieron cargar las revisiones: {e}")
+            report_problem("Carga de revisiones")
 
     # --- REVISIÓN FINAL DEL CREADOR ---
     elif opcion == "Revisión del creador":
@@ -1661,14 +1928,12 @@ else:
                                         "PR registrada. La tarea y la reputación "
                                         "se completarán al llegar el webhook de GitHub."
                                     )
+                                    invalidate_user_overview()
                                     st.rerun()
                                 except ValueError as e:
-                                    st.error(str(e))
+                                    st.warning(str(e))
                                 except Exception as e:
-                                    st.error(
-                                        "No se pudo aprobar o registrar la PR: "
-                                        f"{e}"
-                                    )
+                                    report_problem("Registro de PR final")
                         with reject_col:
                             if st.button(
                                 "Devolver al colaborador",
@@ -1688,11 +1953,10 @@ else:
                                     st.success(
                                         "La entrega volvió al colaborador con tus comentarios."
                                     )
+                                    invalidate_user_overview()
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(
-                                        f"No se pudo devolver la entrega: {e}"
-                                    )
+                                    report_problem("Devolución de entrega")
                     else:
                         st.info(
                             "Esperando que la Pull Request final se fusione. "
@@ -1741,11 +2005,12 @@ else:
                                     },
                                 ).execute()
                                 st.success("PR final registrada.")
+                                invalidate_user_overview()
                                 st.rerun()
                             except ValueError as e:
-                                st.error(str(e))
+                                st.warning(str(e))
                             except Exception as e:
-                                st.error(f"No se pudo registrar la PR: {e}")
+                                report_problem("Registro de PR final")
             st.divider()
             st.subheader("Propuestas de tareas para módulos")
             try:
@@ -1835,11 +2100,10 @@ else:
                                     st.success(
                                         "Tareas creadas y añadidas al proyecto."
                                     )
+                                    invalidate_user_overview()
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(
-                                        f"No se pudo aprobar la propuesta: {e}"
-                                    )
+                                    report_problem("Aprobación de propuesta")
                         with return_col:
                             if st.button(
                                 "Solicitar cambios",
@@ -1857,15 +2121,14 @@ else:
                                     st.success(
                                         "La propuesta volvió a su autor para cambios."
                                     )
+                                    invalidate_user_overview()
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(
-                                        f"No se pudo devolver la propuesta: {e}"
-                                    )
+                                    report_problem("Solicitud de cambios de propuesta")
             except Exception as e:
-                st.error(f"No se pudieron cargar propuestas de módulos: {e}")
+                report_problem("Carga de propuestas de módulos")
         except Exception as e:
-            st.error(f"No se pudo cargar la revisión del creador: {e}")
+            report_problem("Carga de revisiones del creador")
 
     # --- ESTADO DE ENTREGAS ---
     elif opcion == "Mis Entregas":
@@ -1907,4 +2170,4 @@ else:
                         if contribution.get("creator_feedback"):
                             st.warning(contribution["creator_feedback"])
         except Exception as e:
-            st.error(f"No se pudieron cargar tus entregas: {e}")
+            report_problem("Carga de entregas")
