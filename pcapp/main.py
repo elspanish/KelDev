@@ -20,10 +20,11 @@ REVIEW_MODE_LABELS = {"direct": "Directa", "layered": "Por capas"}
 REVIEW_MODE_VALUES = {
     label: value for value, label in REVIEW_MODE_LABELS.items()
 }
+MODULE_WORKFLOWS_UI_ENABLED = False
 logger = logging.getLogger(__name__)
 
 
-def report_problem(context):
+def report_problem(context, error=None):
     if sys.exc_info()[0] is not None:
         logger.exception(
             "A platform operation could not be completed: %s", context
@@ -34,6 +35,127 @@ def report_problem(context):
         "No se pudo completar la operación. Revisa los datos e inténtalo "
         "de nuevo; si persiste, contacta con soporte."
     )
+    if error is not None:
+        st.error(f"Detalle del error: {error}")
+
+
+def render_module_task_proposals(user_id):
+    st.divider()
+    st.subheader("Propuestas de tareas para módulos")
+    try:
+        proposals = (
+            supabase.table("module_task_proposals")
+            .select("id,module_id,proposer_id,tasks,created_at")
+            .eq("estado", "pendiente_revision")
+            .order("created_at")
+            .execute()
+        )
+        owner_proposals = []
+        for proposal in proposals.data or []:
+            module_response = (
+                supabase.table("project_modules")
+                .select("id,project_id,titulo")
+                .eq("id", proposal["module_id"])
+                .execute()
+            )
+            if not module_response.data:
+                continue
+            module = module_response.data[0]
+            project_response = (
+                supabase.table("projects")
+                .select("owner_id,titulo")
+                .eq("id", module["project_id"])
+                .execute()
+            )
+            if (
+                project_response.data
+                and project_response.data[0]["owner_id"] == user_id
+            ):
+                owner_proposals.append(
+                    (proposal, module, project_response.data[0])
+                )
+        if not owner_proposals:
+            st.info("No tienes propuestas de módulos pendientes.")
+        for proposal, module, project in owner_proposals:
+            with st.container(border=True):
+                st.markdown(f"### {module['titulo']}")
+                st.caption(
+                    f"{project['titulo']} · propuesta "
+                    f"{proposal['id']} · autor {proposal['proposer_id']}"
+                )
+                for task_index, proposed_task in enumerate(
+                    proposal["tasks"], start=1
+                ):
+                    with st.expander(
+                        f"{task_index}. {proposed_task.get('titulo') or 'Sin título'}"
+                    ):
+                        for field, label in (
+                            ("habilidades_requeridas", "Habilidades"),
+                            ("instrucciones", "Instrucciones"),
+                            ("objetivo", "Objetivo"),
+                            ("restricciones", "Restricciones"),
+                            ("entregables", "Entregables"),
+                            ("recursos", "Recursos"),
+                            ("criterios_aceptacion", "Criterios de aceptación"),
+                            ("modo_entrega", "Modo de entrega"),
+                            ("repositorio_url", "Repositorio"),
+                            ("duracion_estimada_horas", "Estimación (horas)"),
+                            ("dificultad", "Dificultad"),
+                        ):
+                            value = proposed_task.get(field)
+                            if isinstance(value, list):
+                                value = ", ".join(map(str, value))
+                            st.write(f"**{label}:** {value or '—'}")
+                proposal_feedback = st.text_area(
+                    "Cambios solicitados (si rechazas)",
+                    key=f"module_proposal_feedback_{proposal['id']}",
+                )
+                accept_col, return_col = st.columns(2)
+                with accept_col:
+                    if st.button(
+                        "Aprobar y publicar tareas",
+                        type="primary",
+                        key=f"accept_module_proposal_{proposal['id']}",
+                    ):
+                        try:
+                            supabase.rpc(
+                                "decide_module_task_proposal",
+                                {
+                                    "p_proposal_id": proposal["id"],
+                                    "p_decision": "accepted",
+                                    "p_feedback": "",
+                                },
+                            ).execute()
+                            st.success(
+                                "Tareas creadas y añadidas al proyecto."
+                            )
+                            invalidate_user_overview()
+                            st.rerun()
+                        except Exception:
+                            report_problem("Aprobación de propuesta")
+                with return_col:
+                    if st.button(
+                        "Solicitar cambios",
+                        key=f"reject_module_proposal_{proposal['id']}",
+                    ):
+                        try:
+                            supabase.rpc(
+                                "decide_module_task_proposal",
+                                {
+                                    "p_proposal_id": proposal["id"],
+                                    "p_decision": "changes_requested",
+                                    "p_feedback": proposal_feedback.strip(),
+                                },
+                            ).execute()
+                            st.success(
+                                "La propuesta volvió a su autor para cambios."
+                            )
+                            invalidate_user_overview()
+                            st.rerun()
+                        except Exception:
+                            report_problem("Solicitud de cambios de propuesta")
+    except Exception:
+        report_problem("Carga de propuestas de módulos")
 
 
 def invalidate_user_overview():
@@ -454,12 +576,13 @@ else:
         "Mi Perfil": "Mi Perfil",
         "Crear Proyecto": "Crear Proyecto",
         "Colaborar": "Colaborar",
-        "Redactar tareas": "Redactar tareas",
         "Entregar Tarea": "Entregar Tarea",
         "Revisar tareas": "Revisar tareas",
         "Revisión del creador": "Revisión del creador",
         "Mis Entregas": "Mis Entregas",
     }
+    if MODULE_WORKFLOWS_UI_ENABLED:
+        opciones["Redactar tareas"] = "Redactar tareas"
     if st.session_state.get("opcion_actual") not in opciones.values():
         st.session_state.opcion_actual = "Mi Perfil"
 
@@ -703,43 +826,39 @@ else:
                 "Nombre del proyecto",
                 key="project_title",
                 placeholder=(
-                    "Ej.: Plataforma para organizar voluntariado y tareas "
-                    "comunitarias"
+                    "Ej.: Plataforma web para coordinar campañas de "
+                    "voluntariado, asignar tareas y seguir su progreso"
                 ),
             )
             proj_desc = st.text_area(
                 "Descripción del proyecto",
                 key="project_description",
                 placeholder=(
-                    "Explica el problema, quién lo usará, las funciones "
-                    "principales, tecnologías o restricciones y cómo sabrás "
-                    "que funciona. Incluye aquí el repositorio destino de "
-                    "GitHub (p. ej. https://github.com/usuario/repositorio) "
-                    "para que la IA lo asigne automáticamente a las tareas."
+                    "Explica el problema que resolverá y quién lo usará. "
+                    "Detalla las funciones principales, el resultado esperado, "
+                    "las tecnologías y restricciones (incluida la estructura "
+                    "actual del proyecto, si existe), y cómo comprobar que "
+                    "funciona. Añade la URL base del repositorio de GitHub "
+                    "(https://github.com/propietario/repositorio) para que la "
+                    "IA pueda asignarla a las tareas."
                 ),
             )
-            review_mode_label = st.selectbox(
-                "Flujo de entrega",
-                options=[
-                    "Pull Request directa",
-                    "Revisión por dos colaboradores y el creador",
-                ],
-                help=(
-                    "La revisión por capas exige dos revisiones independientes "
-                    "antes de que el creador registre la PR final."
-                ),
-            )
-            review_mode = (
-                "layered"
-                if review_mode_label.startswith("Revisión por dos")
-                else "direct"
-            )
-            creation_mode = st.radio(
-                "Cómo definir el trabajo",
-                ["Redactaré las tareas", "Publicaré módulos para recibir propuestas"],
-                horizontal=True,
-            )
-            if creation_mode == "Publicaré módulos para recibir propuestas":
+            review_mode = "direct"
+            if MODULE_WORKFLOWS_UI_ENABLED:
+                creation_mode = st.radio(
+                    "Cómo definir el trabajo",
+                    [
+                        "Redactaré las tareas",
+                        "Publicaré módulos para recibir propuestas",
+                    ],
+                    horizontal=True,
+                )
+            else:
+                creation_mode = "Redactaré las tareas"
+            if (
+                MODULE_WORKFLOWS_UI_ENABLED
+                and creation_mode == "Publicaré módulos para recibir propuestas"
+            ):
                 st.caption(
                     "Cada módulo se asigna a un colaborador compatible. "
                     "El creador revisa y aprueba las tareas propuestas antes "
@@ -907,13 +1026,10 @@ else:
                     "claim_timeout_hours": 72,
                     "peer_review_timeout_hours": 48,
                     "creator_review_timeout_hours": 72,
-                    "review_mode": REVIEW_MODE_LABELS[review_mode],
                 }]
                 st.session_state.project_task_draft_version = 0
             for task_draft in st.session_state.project_task_drafts:
-                task_draft.setdefault(
-                    "review_mode", REVIEW_MODE_LABELS[review_mode]
-                )
+                task_draft.pop("review_mode", None)
 
             if st.button(
                 "Generar borrador con Inteligencia Artificial",
@@ -930,11 +1046,9 @@ else:
                             "habilidades_requeridas": ", ".join(
                                 task["habilidades_requeridas"]
                             ),
-                            "repositorio_url": "",
                             "claim_timeout_hours": 72,
                             "peer_review_timeout_hours": 48,
                             "creator_review_timeout_hours": 72,
-                            "review_mode": REVIEW_MODE_LABELS[review_mode],
                         }
                         for task in generated
                     ]
@@ -976,11 +1090,6 @@ else:
                         "Criterios de aceptación"
                     ),
                     "modo_entrega": st.column_config.TextColumn("Modo de entrega"),
-                    "review_mode": st.column_config.SelectboxColumn(
-                        "Flujo de revisión",
-                        options=list(REVIEW_MODE_VALUES),
-                        required=True,
-                    ),
                     "repositorio_url": st.column_config.TextColumn(
                         "Repositorio destino (GitHub)"
                     ),
@@ -1078,9 +1187,7 @@ else:
                             for skill in skills
                             if str(skill).strip()
                         ]
-                        normalized["review_mode"] = REVIEW_MODE_VALUES.get(
-                            normalized["review_mode"], ""
-                        )
+                        normalized["review_mode"] = "direct"
                         for field, value in normalized.items():
                             if not value:
                                 missing_fields.append(f"Tarea {index}: {field}")
@@ -1165,7 +1272,6 @@ else:
                                 "modo_entrega": "Pull Request de GitHub",
                                 "duracion_estimada_horas": 4,
                                 "dificultad": "Media",
-                                "review_mode": REVIEW_MODE_LABELS[review_mode],
                                 "repositorio_url": "",
                                 "claim_timeout_hours": 72,
                                 "peer_review_timeout_hours": 48,
@@ -1176,7 +1282,7 @@ else:
                             invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            report_problem("Guardado del proyecto")
+                            report_problem("Guardado del proyecto", e)
 
     # --- OPCIÓN 2: COLABORAR ---
     elif opcion == "Colaborar":
@@ -1230,24 +1336,26 @@ else:
                         report_problem("Carga de comentarios de entrega")
                 else:
                     try:
-                        active_modules = (
-                            supabase.table("project_modules")
-                            .select("id,titulo")
-                            .eq("asignado_a", usuario_activo)
-                            .eq("estado", "en_progreso")
-                            .execute()
-                        )
+                        active_modules = None
+                        if MODULE_WORKFLOWS_UI_ENABLED:
+                            active_modules = (
+                                supabase.table("project_modules")
+                                .select("id,titulo")
+                                .eq("asignado_a", usuario_activo)
+                                .eq("estado", "en_progreso")
+                                .execute()
+                            )
                     except Exception as e:
                         report_problem("Carga de módulos asignados")
                     else:
-                        if active_modules.data:
+                        if active_modules and active_modules.data:
                             module_title = active_modules.data[0]["titulo"]
                             st.info(
                                 f"Ya tienes asignado el módulo «{module_title}». "
                                 "Termina de redactar sus tareas antes de aceptar "
                                 "otra asignación."
                             )
-                            if st.button(
+                            if MODULE_WORKFLOWS_UI_ENABLED and st.button(
                                 "Continuar con mi módulo",
                                 key="continue_assigned_module",
                             ):
@@ -2012,122 +2120,8 @@ else:
                                 st.warning(str(e))
                             except Exception as e:
                                 report_problem("Registro de PR final")
-            st.divider()
-            st.subheader("Propuestas de tareas para módulos")
-            try:
-                proposals = (
-                    supabase.table("module_task_proposals")
-                    .select("id,module_id,proposer_id,tasks,created_at")
-                    .eq("estado", "pendiente_revision")
-                    .order("created_at")
-                    .execute()
-                )
-                owner_proposals = []
-                for proposal in proposals.data or []:
-                    module_response = (
-                        supabase.table("project_modules")
-                        .select("id,project_id,titulo")
-                        .eq("id", proposal["module_id"])
-                        .execute()
-                    )
-                    if not module_response.data:
-                        continue
-                    module = module_response.data[0]
-                    project_response = (
-                        supabase.table("projects")
-                        .select("owner_id,titulo")
-                        .eq("id", module["project_id"])
-                        .execute()
-                    )
-                    if (
-                        project_response.data
-                        and project_response.data[0]["owner_id"] == usuario_activo
-                    ):
-                        owner_proposals.append(
-                            (proposal, module, project_response.data[0])
-                        )
-                if not owner_proposals:
-                    st.info("No tienes propuestas de módulos pendientes.")
-                for proposal, module, project in owner_proposals:
-                    with st.container(border=True):
-                        st.markdown(f"### {module['titulo']}")
-                        st.caption(
-                            f"{project['titulo']} · propuesta "
-                            f"{proposal['id']} · autor {proposal['proposer_id']}"
-                        )
-                        for task_index, proposed_task in enumerate(
-                            proposal["tasks"], start=1
-                        ):
-                            with st.expander(
-                                f"{task_index}. {proposed_task.get('titulo') or 'Sin título'}"
-                            ):
-                                for field, label in (
-                                    ("habilidades_requeridas", "Habilidades"),
-                                    ("instrucciones", "Instrucciones"),
-                                    ("objetivo", "Objetivo"),
-                                    ("restricciones", "Restricciones"),
-                                    ("entregables", "Entregables"),
-                                    ("recursos", "Recursos"),
-                                    ("criterios_aceptacion", "Criterios de aceptación"),
-                                    ("modo_entrega", "Modo de entrega"),
-                                    ("repositorio_url", "Repositorio"),
-                                    ("duracion_estimada_horas", "Estimación (horas)"),
-                                    ("dificultad", "Dificultad"),
-                                ):
-                                    value = proposed_task.get(field)
-                                    if isinstance(value, list):
-                                        value = ", ".join(map(str, value))
-                                    st.write(f"**{label}:** {value or '—'}")
-                        proposal_feedback = st.text_area(
-                            "Cambios solicitados (si rechazas)",
-                            key=f"module_proposal_feedback_{proposal['id']}",
-                        )
-                        accept_col, return_col = st.columns(2)
-                        with accept_col:
-                            if st.button(
-                                "Aprobar y publicar tareas",
-                                type="primary",
-                                key=f"accept_module_proposal_{proposal['id']}",
-                            ):
-                                try:
-                                    supabase.rpc(
-                                        "decide_module_task_proposal",
-                                        {
-                                            "p_proposal_id": proposal["id"],
-                                            "p_decision": "accepted",
-                                            "p_feedback": "",
-                                        },
-                                    ).execute()
-                                    st.success(
-                                        "Tareas creadas y añadidas al proyecto."
-                                    )
-                                    invalidate_user_overview()
-                                    st.rerun()
-                                except Exception as e:
-                                    report_problem("Aprobación de propuesta")
-                        with return_col:
-                            if st.button(
-                                "Solicitar cambios",
-                                key=f"reject_module_proposal_{proposal['id']}",
-                            ):
-                                try:
-                                    supabase.rpc(
-                                        "decide_module_task_proposal",
-                                        {
-                                            "p_proposal_id": proposal["id"],
-                                            "p_decision": "changes_requested",
-                                            "p_feedback": proposal_feedback.strip(),
-                                        },
-                                    ).execute()
-                                    st.success(
-                                        "La propuesta volvió a su autor para cambios."
-                                    )
-                                    invalidate_user_overview()
-                                    st.rerun()
-                                except Exception as e:
-                                    report_problem("Solicitud de cambios de propuesta")
-            except Exception as e:
-                report_problem("Carga de propuestas de módulos")
+            if MODULE_WORKFLOWS_UI_ENABLED:
+                render_module_task_proposals(usuario_activo)
         except Exception as e:
             report_problem("Carga de revisiones del creador")
 
