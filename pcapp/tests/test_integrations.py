@@ -1,6 +1,7 @@
 import json
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from integrations import (
     _clean_task,
@@ -10,6 +11,24 @@ from integrations import (
     parse_github_repository_url,
     validate_github_code_url,
 )
+
+
+def _valid_generated_tasks_json():
+    return json.dumps({
+        "tasks": [{
+            "titulo": "Crear formulario",
+            "habilidades_requeridas": ["Streamlit"],
+            "instrucciones": "Crear y validar el formulario.",
+            "objetivo": "Formulario funcional.",
+            "restricciones": "No usar datos externos.",
+            "entregables": "Formulario y pruebas.",
+            "recursos": "Documentación de Streamlit.",
+            "criterios_aceptacion": "Campos validados.",
+            "modo_entrega": "Pull Request de GitHub.",
+            "duracion_estimada_horas": 3,
+            "dificultad": "Baja",
+        }],
+    })
 
 
 class GitHubPullRequestUrlTests(unittest.TestCase):
@@ -141,25 +160,118 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         self.assertIn('"repositorio_url"', prompt)
         self.assertIn("no la pongas en modo_entrega", prompt)
 
+    def test_generates_with_groq_before_google_ai_studio(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {"GROQ_API_KEY": "groq-test-key"},
+                clear=True,
+            ),
+            patch("groq.Groq") as groq_client,
+        ):
+            client = groq_client.return_value
+            client.chat.completions.create.return_value.choices = [
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=_valid_generated_tasks_json()
+                    )
+                )
+            ]
+
+            tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        groq_client.assert_called_once_with(
+            api_key="groq-test-key",
+            timeout=30.0,
+            max_retries=1,
+        )
+        call = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call["model"], "llama-3.1-8b-instant")
+        self.assertEqual(call["response_format"], {"type": "json_object"})
+        self.assertIn("Título del proyecto: App", call["messages"][0]["content"])
+
+    def test_falls_back_to_google_when_groq_request_fails(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "GROQ_API_KEY": "groq-test-key",
+                    "GEMINI_API_KEY": "gemini-test-key",
+                },
+                clear=True,
+            ),
+            patch("groq.Groq", side_effect=RuntimeError("Groq unavailable")),
+            patch("google.genai.Client") as gemini_client,
+        ):
+            gemini_client.return_value.models.generate_content.return_value.text = (
+                _valid_generated_tasks_json()
+            )
+
+            tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        gemini_client.assert_called_once_with(api_key="gemini-test-key")
+
+    def test_falls_back_to_google_when_groq_returns_invalid_json(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "GROQ_API_KEY": "groq-test-key",
+                    "GEMINI_API_KEY": "gemini-test-key",
+                },
+                clear=True,
+            ),
+            patch("groq.Groq") as groq_client,
+            patch("google.genai.Client") as gemini_client,
+        ):
+            groq_client.return_value.chat.completions.create.return_value.choices = [
+                SimpleNamespace(
+                    message=SimpleNamespace(content="not valid JSON")
+                )
+            ]
+            gemini_client.return_value.models.generate_content.return_value.text = (
+                _valid_generated_tasks_json()
+            )
+
+            tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        gemini_client.assert_called_once_with(api_key="gemini-test-key")
+
+    def test_reports_errors_when_both_providers_fail(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "GROQ_API_KEY": "groq-test-key",
+                    "GEMINI_API_KEY": "gemini-test-key",
+                },
+                clear=True,
+            ),
+            patch("groq.Groq", side_effect=RuntimeError("Groq unavailable")),
+            patch(
+                "google.genai.Client",
+                side_effect=RuntimeError("Google unavailable"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Groq: Groq unavailable; Google AI Studio: Google unavailable",
+            ):
+                generate_project_tasks("App", "Una aplicación Streamlit.")
+
     @patch("google.genai.Client")
-    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"})
+    @patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "", "GEMINI_API_KEY": "test-key"},
+    )
     def test_generates_and_validates_structured_gemini_tasks(self, client_class):
         client = client_class.return_value
-        client.models.generate_content.return_value.text = json.dumps({
-            "tasks": [{
-                "titulo": "Crear formulario",
-                "habilidades_requeridas": ["Streamlit"],
-                "instrucciones": "Crear y validar el formulario.",
-                "objetivo": "Formulario funcional.",
-                "restricciones": "No usar datos externos.",
-                "entregables": "Formulario y pruebas.",
-                "recursos": "Documentación de Streamlit.",
-                "criterios_aceptacion": "Campos validados.",
-                "modo_entrega": "Pull Request de GitHub.",
-                "duracion_estimada_horas": 3,
-                "dificultad": "Baja",
-            }],
-        })
+        client.models.generate_content.return_value.text = (
+            _valid_generated_tasks_json()
+        )
 
         tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
 
@@ -173,7 +285,10 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         )
 
     @patch("google.genai.Client")
-    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"})
+    @patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "", "GEMINI_API_KEY": "test-key"},
+    )
     def test_routes_repository_in_project_description_to_destination_field(
         self,
         client_class,

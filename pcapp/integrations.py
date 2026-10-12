@@ -1,8 +1,11 @@
 import json
+import logging
 import os
 import re
 from urllib.parse import urlparse
 
+
+logger = logging.getLogger(__name__)
 
 TASK_FIELDS = (
     "titulo",
@@ -109,12 +112,12 @@ def _clean_task(task):
     ]
     if missing:
         raise ValueError(
-            "Gemini dejó campos obligatorios vacíos: "
+            "El modelo dejó campos obligatorios vacíos: "
             + ", ".join(missing)
         )
     if not cleaned["habilidades_requeridas"]:
         raise ValueError(
-            "Gemini debe asignar al menos una habilidad requerida por tarea."
+            "El modelo debe asignar al menos una habilidad requerida por tarea."
         )
     if cleaned["dificultad"].casefold() not in TASK_DIFFICULTIES:
         raise ValueError(
@@ -177,10 +180,59 @@ Descripción del proyecto: {description}
 
 
 def generate_project_tasks(title, description):
+    prompt = build_project_task_prompt(title, description)
+    groq_error = None
+    try:
+        response_text = _generate_with_groq(prompt)
+        return _clean_generated_tasks(response_text, description)
+    except Exception as error:
+        groq_error = error
+        logger.warning(
+            "Groq task generation failed; falling back to Google AI Studio: %s",
+            groq_error,
+        )
+
+    try:
+        response_text = _generate_with_gemini(prompt)
+        return _clean_generated_tasks(response_text, description)
+    except Exception as gemini_error:
+        raise RuntimeError(
+            "No se pudieron generar las tareas con ninguno de los proveedores. "
+            f"Groq: {groq_error}; Google AI Studio: {gemini_error}"
+        ) from gemini_error
+
+
+def _generate_with_groq(prompt):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "Falta configurar GROQ_API_KEY para usar Groq."
+        )
+
+    from groq import Groq
+
+    client = Groq(api_key=api_key, timeout=30.0, max_retries=1)
+    response = client.chat.completions.create(
+        model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    try:
+        response_text = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError) as error:
+        raise RuntimeError(
+            "Groq devolvió una respuesta sin contenido."
+        ) from error
+    if not isinstance(response_text, str) or not response_text.strip():
+        raise RuntimeError("Groq devolvió una respuesta vacía.")
+    return response_text
+
+
+def _generate_with_gemini(prompt):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "Falta configurar GEMINI_API_KEY en los secretos del servidor."
+            "Falta configurar GEMINI_API_KEY para Google AI Studio."
         )
 
     from google import genai
@@ -189,21 +241,25 @@ def generate_project_tasks(title, description):
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=build_project_task_prompt(title, description),
+        contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
         ),
     )
     if not response.text:
-        raise RuntimeError("Gemini devolvió una respuesta vacía.")
+        raise RuntimeError("Google AI Studio devolvió una respuesta vacía.")
+    return response.text
+
+
+def _clean_generated_tasks(response_text, description):
     try:
-        result = json.loads(response.text)
+        result = json.loads(response_text)
     except json.JSONDecodeError as error:
-        raise ValueError("Gemini no devolvió un JSON válido.") from error
+        raise ValueError("El modelo no devolvió un JSON válido.") from error
 
     tasks = result.get("tasks") if isinstance(result, dict) else None
     if not isinstance(tasks, list) or not tasks:
-        raise ValueError("Gemini no devolvió una lista de tareas.")
+        raise ValueError("El modelo no devolvió una lista de tareas.")
     cleaned_tasks = [_clean_task(task) for task in tasks]
     repository_url = _github_repository_from_description(description)
     if repository_url:

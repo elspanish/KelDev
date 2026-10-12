@@ -696,7 +696,8 @@ else:
                 st.session_state.project_description = ""
             st.write(
                 "Define el proyecto y sus tareas, o genera un borrador editable "
-                "con Gemini antes de publicarlo."
+                "con Groq (Google AI Studio se usa como respaldo) antes de "
+                "publicarlo."
             )
             proj_titulo = st.text_input(
                 "Nombre del proyecto",
