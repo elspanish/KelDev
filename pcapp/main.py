@@ -915,7 +915,7 @@ else:
                 )
 
             if st.button(
-                "Generar borrador con Google AI Studio",
+                "Generar borrador con Inteligencia Artificial",
                 disabled=not proj_titulo.strip() or not proj_desc.strip(),
             ):
                 try:
