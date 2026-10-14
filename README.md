@@ -20,13 +20,27 @@ las tareas manualmente.
 
 ## Preparar Supabase y GitHub
 
-1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La migración única
-   `supabase/migrations/20261013100000_launch_schema.sql` crea las tablas base
-   si faltan y completa las tablas preexistentes:
+1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La única migración
+   `20261014143000_platform_dev_consolidated.sql` crea o actualiza el esquema,
+   el catálogo compartido de habilidades y las funciones de reputación.
+   Si este proyecto ya aplicó las versiones anteriores, consolida primero su
+   historial para que coincida con el único archivo local:
+
+   ```sh
+   supabase migration repair --status reverted \
+     20261013100000 20261013110000 20261013120000 20261013130000
+   supabase db push
+   ```
+
+   Hazlo solo después de confirmar que las copias de seguridad y el proyecto
+   remoto son los correctos. La migración consolidada vuelve a aplicar el
+   esquema de forma idempotente. En una instalación nueva, ejecuta
+   `supabase db push`.
    `project_modules.project_id` conserva el tipo `bigint` y su relación con
    `projects`, mientras que las asignaciones y revisiones reciben los campos y
-   estados que usa el flujo de trabajo. Ejecuta el comando antes de iniciar la
-   aplicación.
+   estados que usa el flujo de trabajo. La migración también elimina firmas
+   antiguas en conflicto de las RPC `create_project_with_workflow`, `claim_task`
+   y `submit_task_pr`. Ejecuta el comando antes de iniciar la aplicación.
 2. Despliega las funciones:
    `supabase functions deploy github-webhook` y
    `supabase functions deploy check-pull-request`.
@@ -57,10 +71,42 @@ flujo por capas se asignan hasta dos revisiones independientes; si no hay
 revisores disponibles o vencen sin reemplazo, la entrega se escala al creador
 para evitar bloquear el trabajo. Después, el creador registra la PR final al
 repositorio destino indicado en la tarea y la fusiona. Solo el merge confirmado
-por GitHub completa la tarea y concede la puntuación configurada (por defecto,
-5 × 100 puntos, una sola
-vez). Los enlaces de PR directa y de PR final deben corresponder al repositorio
-destino de la tarea.
+por GitHub completa la tarea y concede reputación una sola vez: 50, 80 o 140
+puntos por cada habilidad coincidente, según la dificultad de la tarea. Los
+enlaces de PR directa y de PR final deben corresponder al repositorio destino
+de la tarea.
+
+En el flujo directo, el colaborador debe crear un fork del repositorio destino,
+subir sus cambios al fork y abrir una Pull Request cuyo repositorio base sea el
+del creador. Después debe copiar el enlace de esa PR y enviarlo desde la
+plataforma. La plataforma valida que el enlace sea una PR de GitHub y que apunte
+al repositorio configurado, y registra la entrega asociándola con la tarea y el
+colaborador. Si no pega el enlace, la plataforma no registra esa entrega ni
+puede atribuirle el merge o concederle reputación; la tarea asignada puede
+liberarse cuando venza su plazo.
+
+Al recibir el enlace, la plataforma consulta inicialmente el estado de la PR en
+GitHub. Si sigue abierta, la contribución queda pendiente. Un webhook de GitHub
+notifica posteriormente su cierre: un cierre con merge confirmado completa la
+tarea y concede reputación una sola vez; un cierre sin merge rechaza la entrega
+y vuelve a liberar la tarea. Para que esa actualización automática funcione,
+deben estar desplegadas ambas funciones de Supabase y configurado el webhook de
+GitHub con su secreto.
+
+## Habilidades, reputación e informe profesional
+
+Las habilidades se eligen en un catálogo compartido con búsqueda; cualquier
+persona autenticada puede añadir una nueva y queda disponible para todos. La
+dificultad de cada tarea es Fácil, Medio o Difícil. Cuando GitHub confirma el
+merge, el colaborador recibe 50, 80 o 140 puntos respectivamente por cada
+habilidad requerida que tenga en su perfil. La reputación total es la suma de
+los puntos de sus habilidades y cada contribución conserva el desglose exacto.
+Al migrar perfiles antiguos, la reputación histórica sin desglose se reparte
+entre las habilidades que ya tiene registradas cada perfil.
+
+Desde «Mi Perfil» se puede descargar un informe PDF con fecha de emisión,
+identidad de la cuenta, reputación total, puntos por habilidad e historial de
+colaboraciones y sus estados.
 
 ## Matching y plazos
 
@@ -95,7 +141,7 @@ proponente lo cambie en esa tarea.
 
 Gemini recibe solo el título y la descripción del proyecto y devuelve tareas
 editables con estimación de hasta 8 horas por persona y dificultad
-Baja/Media/Alta. Si incluyes la URL de GitHub en la descripción, se asigna
+Fácil/Medio/Difícil. Si incluyes la URL de GitHub en la descripción, se asigna
 automáticamente como repositorio destino de cada tarea, separada del modo de
 entrega. Al crear un proyecto también se puede publicar solo una lista
 de módulos: los colaboradores compatibles reclaman un módulo, proponen tareas

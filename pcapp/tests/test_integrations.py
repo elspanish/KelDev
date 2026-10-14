@@ -26,7 +26,7 @@ def _valid_generated_tasks_json():
             "criterios_aceptacion": "Campos validados.",
             "modo_entrega": "Pull Request de GitHub.",
             "duracion_estimada_horas": 3,
-            "dificultad": "Baja",
+            "dificultad": "Fácil",
         }],
     })
 
@@ -86,6 +86,24 @@ class GitHubPullRequestUrlTests(unittest.TestCase):
 
 
 class GeneratedTaskValidationTests(unittest.TestCase):
+    def test_accepts_each_supported_difficulty(self):
+        for difficulty in ("Fácil", "Medio", "Difícil"):
+            with self.subTest(difficulty=difficulty):
+                task = _clean_task({
+                    "titulo": "Crear API",
+                    "habilidades_requeridas": ["Python"],
+                    "instrucciones": "Implementar endpoints",
+                    "objetivo": "API funcional",
+                    "restricciones": "Mantener compatibilidad",
+                    "entregables": "Código y pruebas",
+                    "recursos": "Documentación",
+                    "criterios_aceptacion": "Pruebas correctas",
+                    "modo_entrega": "Pull Request",
+                    "duracion_estimada_horas": 4,
+                    "dificultad": difficulty,
+                })
+                self.assertEqual(task["dificultad"], difficulty)
+
     def test_normalizes_generated_task_skills(self):
         task = _clean_task({
             "titulo": "Crear API",
@@ -98,7 +116,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             "criterios_aceptacion": "Pruebas correctas",
             "modo_entrega": "Pull Request",
             "duracion_estimada_horas": 4,
-            "dificultad": "Media",
+            "dificultad": "Medio",
         })
         self.assertEqual(task["habilidades_requeridas"], ["Python", "SQL"])
 
@@ -120,7 +138,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             "duracion_estimada_horas": 9,
             "dificultad": "Extrema",
         }
-        with self.assertRaisesRegex(ValueError, "Baja, Media o Alta"):
+        with self.assertRaisesRegex(ValueError, "Fácil, Medio o Difícil"):
             _clean_task(task)
 
     def test_rejects_duration_longer_than_one_person_day(self):
@@ -135,7 +153,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             "criterios_aceptacion": "Pruebas correctas",
             "modo_entrega": "Pull Request",
             "duracion_estimada_horas": 9,
-            "dificultad": "Media",
+            "dificultad": "Medio",
         }
         with self.assertRaisesRegex(ValueError, "1 a 8 horas"):
             _clean_task(task)
@@ -276,7 +294,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
 
         self.assertEqual(tasks[0]["duracion_estimada_horas"], 3)
-        self.assertEqual(tasks[0]["dificultad"], "Baja")
+        self.assertEqual(tasks[0]["dificultad"], "Fácil")
         call = client.models.generate_content.call_args.kwargs
         self.assertIn("Título del proyecto: App", call["contents"])
         self.assertEqual(
@@ -309,7 +327,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
                     "https://github.com/example/project/pulls."
                 ),
                 "duracion_estimada_horas": 3,
-                "dificultad": "Baja",
+                "dificultad": "Fácil",
             }],
         })
 

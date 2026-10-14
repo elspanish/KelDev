@@ -15,11 +15,14 @@ from integrations import (
     parse_github_repository_url,
     validate_github_code_url,
 )
+from profile_export import build_profile_pdf
 
 REVIEW_MODE_LABELS = {"direct": "Directa", "layered": "Por capas"}
 REVIEW_MODE_VALUES = {
     label: value for value, label in REVIEW_MODE_LABELS.items()
 }
+TASK_DIFFICULTIES = ("Fácil", "Medio", "Difícil")
+DIFFICULTY_REWARDS = {"Fácil": 50, "Medio": 80, "Difícil": 140}
 MODULE_WORKFLOWS_UI_ENABLED = False
 logger = logging.getLogger(__name__)
 
@@ -162,12 +165,149 @@ def invalidate_user_overview():
     st.session_state.pop("overview_user_id", None)
 
 
+def profile_skill_names(value):
+    if isinstance(value, dict):
+        value = list(value)
+    if not isinstance(value, list):
+        return []
+    return sorted(
+        {str(skill).strip() for skill in value if str(skill).strip()},
+        key=str.casefold,
+    )
+
+
+def load_skill_catalog():
+    response = (
+        supabase.table("skill_catalog")
+        .select("nombre")
+        .order("nombre")
+        .execute()
+    )
+    return [row["nombre"] for row in response.data or []]
+
+
+def add_skills_to_catalog(skills):
+    canonical_skills = []
+    for skill in skills:
+        name = str(skill).strip()
+        if not name:
+            continue
+        response = supabase.rpc(
+            "add_skill_to_catalog",
+            {"p_nombre": name},
+        ).execute()
+        if not response.data:
+            raise RuntimeError(
+                f"No se pudo añadir la habilidad «{name}» al catálogo."
+            )
+        canonical_name = str(response.data)
+        if canonical_name.casefold() not in {
+            existing.casefold() for existing in canonical_skills
+        }:
+            canonical_skills.append(canonical_name)
+    return canonical_skills
+
+
+def load_user_collaborations(user_id):
+    contributions = []
+    page_size = 500
+    offset = 0
+    while True:
+        response = (
+            supabase.table("contributions")
+            .select(
+                "id,task_id,estado,workflow_state,created_at,code_url,"
+                "github_pr_url,reputacion_detalle,"
+                "reputacion_detalle_completo"
+            )
+            .eq("usuario_id", user_id)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        page = response.data or []
+        contributions.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    task_ids = list({item["task_id"] for item in contributions})
+    tasks = {}
+    projects = {}
+    if task_ids:
+        for offset in range(0, len(task_ids), 200):
+            task_response = (
+                supabase.table("tasks")
+                .select("id,titulo,dificultad,project_id")
+                .in_("id", task_ids[offset : offset + 200])
+                .execute()
+            )
+            tasks.update({
+                task["id"]: task for task in task_response.data or []
+            })
+        project_ids = list({
+            task["project_id"]
+            for task in tasks.values()
+            if task.get("project_id") is not None
+        })
+        if project_ids:
+            for offset in range(0, len(project_ids), 200):
+                project_response = (
+                    supabase.table("projects")
+                    .select("id,titulo")
+                    .in_("id", project_ids[offset : offset + 200])
+                    .execute()
+                )
+                projects.update({
+                    project["id"]: project
+                    for project in project_response.data or []
+                })
+
+    status_labels = {
+        "completed": "Completada",
+        "peer_review": "En revisión por pares",
+        "changes_requested": "Cambios solicitados",
+        "awaiting_creator": "Pendiente de revisión del creador",
+        "awaiting_merge": "Pendiente de merge",
+        "rejected": "Rechazada",
+    }
+    for contribution in contributions:
+        task = tasks.get(contribution["task_id"], {})
+        contribution["task"] = task
+        contribution["project"] = projects.get(task.get("project_id"), {})
+        contribution["estado_label"] = status_labels.get(
+            contribution.get("workflow_state"),
+            contribution.get("estado") or "—",
+        )
+    return contributions
+
+
+def render_new_skill_action(selected_skills, catalog, key):
+    known_names = {name.casefold() for name in catalog}
+    new_skills = [
+        skill
+        for skill in selected_skills
+        if str(skill).strip().casefold() not in known_names
+    ]
+    if new_skills and st.button(
+        "Añadir al catálogo: " + ", ".join(map(str, new_skills)),
+        key=key,
+    ):
+        try:
+            add_skills_to_catalog(new_skills)
+            st.success("Habilidad añadida al catálogo compartido.")
+            st.rerun()
+        except Exception as error:
+            report_problem("Añadir habilidad al catálogo", error)
+
+
 def load_user_overview(user_id):
     profile_response = (
         supabase.table("profiles")
         .select(
             "email,nombre,descripcion,habilidades,reputacion,"
-            "tareas_completadas"
+            "reputacion_habilidades,tareas_completadas"
         )
         .eq("id", user_id)
         .execute()
@@ -184,7 +324,7 @@ def load_user_overview(user_id):
             supabase.table("profiles")
             .select(
                 "email,nombre,descripcion,habilidades,reputacion,"
-                "tareas_completadas"
+                "reputacion_habilidades,tareas_completadas"
             )
             .eq("id", user_id)
             .execute()
@@ -263,7 +403,7 @@ def load_user_overview(user_id):
     }
 
 
-def render_task_details(task):
+def render_task_details(task, user_skills=None):
     skills = task.get("habilidades_requeridas") or []
     if isinstance(skills, dict):
         skills = list(skills)
@@ -300,6 +440,26 @@ def render_task_details(task):
     )
     for label, value in details:
         st.write(f"**{label}:** {value or '—'}")
+
+    if user_skills is not None:
+        reward = DIFFICULTY_REWARDS.get(task.get("dificultad"), 0)
+        owned_skills = {str(skill).casefold() for skill in user_skills}
+        matched_skills = [
+            str(skill)
+            for skill in skills
+            if str(skill).casefold() in owned_skills
+        ]
+        st.write("**Reputación por habilidad:**")
+        if matched_skills:
+            st.write(
+                " · ".join(f"{skill}: +{reward}" for skill in matched_skills)
+            )
+            st.info(
+                f"Reputación total estimada por esta tarea: "
+                f"{len(matched_skills) * reward} puntos."
+            )
+        else:
+            st.caption("No hay habilidades coincidentes para esta tarea.")
 
     repository_url = task.get("repositorio_url")
     if repository_url:
@@ -572,6 +732,13 @@ else:
             }
         st.session_state.overview_user_id = usuario_activo
 
+    perfil_actual = (
+        (st.session_state.get("user_overview") or {}).get("profile") or {}
+    )
+    habilidades_actuales = profile_skill_names(
+        perfil_actual.get("habilidades") or []
+    )
+
     opciones = {
         "Mi Perfil": "Mi Perfil",
         "Crear Proyecto": "Crear Proyecto",
@@ -631,7 +798,7 @@ else:
                 supabase.table("profiles")
                 .select(
                     "email,nombre,descripcion,habilidades,reputacion,"
-                    "tareas_completadas"
+                    "reputacion_habilidades,tareas_completadas"
                 )
                 .eq("id", usuario_activo)
                 .execute()
@@ -643,17 +810,19 @@ else:
                 st.info("Tu perfil todavía no está disponible.")
             else:
                 perfil = perfil_res.data[0]
-                habilidades_raw = perfil.get("habilidades") or {}
-                if isinstance(habilidades_raw, dict):
-                    habilidades = dict(habilidades_raw)
-                elif isinstance(habilidades_raw, list):
-                    habilidades = {
-                        str(nombre).strip(): 0
-                        for nombre in habilidades_raw
-                        if str(nombre).strip()
-                    }
-                else:
-                    habilidades = {}
+                habilidades = profile_skill_names(
+                    perfil.get("habilidades") or []
+                )
+                reputacion_habilidades = (
+                    perfil.get("reputacion_habilidades") or {}
+                )
+                if not isinstance(reputacion_habilidades, dict):
+                    reputacion_habilidades = {}
+                try:
+                    catalogo_habilidades = load_skill_catalog()
+                except Exception as error:
+                    report_problem("Carga del catálogo de habilidades", error)
+                    catalogo_habilidades = None
 
                 nombre = perfil.get("nombre") or "Desarrollador"
                 reputacion_total = int(perfil.get("reputacion") or 0)
@@ -682,7 +851,7 @@ else:
                             f"{assigned_task.get('titulo') or 'Tarea'} · "
                             f"{assigned_task.get('estado') or 'sin estado'}"
                         ):
-                            render_task_details(assigned_task)
+                            render_task_details(assigned_task, habilidades)
                 else:
                     st.info("No tienes tareas asignadas.")
 
@@ -715,17 +884,26 @@ else:
 
                 st.divider()
                 st.subheader("Tus habilidades")
-                if habilidades:
+                habilidades_con_reputacion = sorted(
+                    set(habilidades) | set(reputacion_habilidades),
+                    key=str.casefold,
+                )
+                if habilidades_con_reputacion:
                     pares = sorted(
-                        habilidades.items(),
-                        key=lambda item: str(item[0]).casefold(),
+                        habilidades_con_reputacion,
+                        key=str.casefold,
                     )
                     columnas = st.columns(min(3, len(pares)))
-                    for indice, (habilidad, puntos) in enumerate(pares):
+                    for indice, habilidad in enumerate(pares):
                         with columnas[indice % len(columnas)]:
                             with st.container(border=True):
                                 st.markdown(f"**{habilidad}**")
-                                st.metric("Puntos", int(puntos or 0))
+                                st.metric(
+                                    "Puntos",
+                                    int(reputacion_habilidades.get(habilidad) or 0),
+                                )
+                                if habilidad not in habilidades:
+                                    st.caption("Habilidad histórica")
                 else:
                     with st.container(border=True):
                         st.info(
@@ -733,7 +911,7 @@ else:
                             "encontrar tareas compatibles."
                         )
 
-                col_editar, col_agregar = st.columns(2)
+                col_editar, col_exportar = st.columns(2)
                 with col_editar:
                     with st.expander("Editar perfil"):
                         with st.form("form_editar_nombre"):
@@ -769,49 +947,88 @@ else:
                                 except Exception:
                                     report_problem("Actualización del perfil")
 
-                with col_agregar:
-                    with st.expander("Añadir habilidades"):
-                        with st.form("form_agregar_habilidades"):
-                            nuevas_texto = st.text_input(
-                                "Habilidades separadas por comas",
-                                placeholder="Python, SQL, Diseño",
-                            )
-                            agregar = st.form_submit_button(
-                                "Guardar habilidades",
-                                use_container_width=True,
-                            )
-                        if agregar:
-                            nuevas = [
-                                nombre_habilidad.strip()
-                                for nombre_habilidad in nuevas_texto.split(",")
-                                if nombre_habilidad.strip()
-                            ]
-                            if not nuevas:
-                                st.warning("Escribe al menos una habilidad.")
-                            else:
-                                for nombre_habilidad in nuevas:
-                                    existe = any(
-                                        str(actual).casefold()
-                                        == nombre_habilidad.casefold()
-                                        for actual in habilidades
-                                    )
-                                    if not existe:
-                                        habilidades[nombre_habilidad] = 0
-                                try:
-                                    (
-                                        supabase.table("profiles")
-                                        .update({"habilidades": habilidades})
-                                        .eq("id", usuario_activo)
-                                        .execute()
-                                    )
-                                    st.success("Habilidades actualizadas.")
-                                    invalidate_user_overview()
-                                    st.rerun()
-                                except Exception:
-                                    report_problem("Actualización de habilidades")
+                with col_exportar:
+                    st.markdown("#### Exportar perfil")
+                    try:
+                        colaboraciones = load_user_collaborations(usuario_activo)
+                        perfil_pdf = {
+                            **perfil,
+                            "id": usuario_activo,
+                            "reputacion": reputacion_total,
+                        }
+                        perfil_pdf_bytes = build_profile_pdf(
+                            perfil_pdf,
+                            colaboraciones,
+                        )
+                    except Exception as error:
+                        report_problem("Generación del informe PDF", error)
+                    else:
+                        st.download_button(
+                            "Descargar informe profesional (PDF)",
+                            data=perfil_pdf_bytes,
+                            file_name="informe-profesional-plataforma-dev.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+
+                with st.expander("Editar habilidades"):
+                    if catalogo_habilidades is None:
+                        st.warning(
+                            "No se pudo cargar el catálogo de habilidades."
+                        )
+                    else:
+                        habilidades_seleccionadas = st.multiselect(
+                            "Tus habilidades",
+                            options=catalogo_habilidades,
+                            default=[
+                                skill for skill in habilidades
+                                if skill in catalogo_habilidades
+                            ],
+                            key="profile_skills_multiselect",
+                            accept_new_options=True,
+                            help=(
+                                "Busca en el catálogo o escribe una habilidad "
+                                "nueva. Las habilidades nuevas se comparten "
+                                "con todas las personas."
+                            ),
+                        )
+                        render_new_skill_action(
+                            habilidades_seleccionadas,
+                            catalogo_habilidades,
+                            "add_profile_skills_to_catalog",
+                        )
+                        if st.button(
+                            "Guardar habilidades del perfil",
+                            key="save_profile_skills",
+                            type="primary",
+                        ):
+                            try:
+                                habilidades_canonicas = add_skills_to_catalog(
+                                    habilidades_seleccionadas
+                                )
+                                (
+                                    supabase.table("profiles")
+                                    .update({
+                                        "habilidades": habilidades_canonicas,
+                                    })
+                                    .eq("id", usuario_activo)
+                                    .execute()
+                                )
+                                st.success("Habilidades actualizadas.")
+                                invalidate_user_overview()
+                                st.rerun()
+                            except Exception as error:
+                                report_problem(
+                                    "Actualización de habilidades", error
+                                )
 
     # --- OPCIÓN 1: CREAR PROYECTO Y TAREAS ---
     elif opcion == "Crear Proyecto":
+        try:
+            catalogo_tareas = load_skill_catalog()
+        except Exception as error:
+            report_problem("Carga del catálogo de habilidades", error)
+            catalogo_tareas = None
         st.subheader("Crear un nuevo proyecto")
         with st.container(border=True):
             if st.session_state.pop("clear_project_form", False):
@@ -1022,7 +1239,7 @@ else:
                     "modo_entrega": "Pull Request de GitHub",
                     "repositorio_url": "",
                     "duracion_estimada_horas": 4,
-                    "dificultad": "Media",
+                    "dificultad": "Medio",
                     "claim_timeout_hours": 72,
                     "peer_review_timeout_hours": 48,
                     "creator_review_timeout_hours": 72,
@@ -1030,6 +1247,16 @@ else:
                 st.session_state.project_task_draft_version = 0
             for task_draft in st.session_state.project_task_drafts:
                 task_draft.pop("review_mode", None)
+            if "project_task_skill_drafts" not in st.session_state:
+                st.session_state.project_task_skill_drafts = [
+                    str(task.get("habilidades_requeridas") or "").split(",")
+                    for task in st.session_state.project_task_drafts
+                ]
+            if "project_task_skill_draft_titles" not in st.session_state:
+                st.session_state.project_task_skill_draft_titles = [
+                    str(task.get("titulo") or "")
+                    for task in st.session_state.project_task_drafts
+                ]
 
             if st.button(
                 "Generar borrador con Inteligencia Artificial",
@@ -1052,6 +1279,13 @@ else:
                         }
                         for task in generated
                     ]
+                    st.session_state.project_task_skill_drafts = [
+                        task["habilidades_requeridas"]
+                        for task in generated
+                    ]
+                    st.session_state.project_task_skill_draft_titles = [
+                        task["titulo"] for task in generated
+                    ]
                     st.session_state.project_task_draft_version += 1
                     st.success(
                         "Borrador generado. Revísalo y edítalo antes de guardar."
@@ -1070,17 +1304,22 @@ else:
                 f"project_tasks_editor_"
                 f"{st.session_state.project_task_draft_version}"
             )
+            editor_drafts = [
+                {
+                    key: value
+                    for key, value in task.items()
+                    if key != "habilidades_requeridas"
+                }
+                for task in st.session_state.project_task_drafts
+            ]
             edited_tasks = st.data_editor(
-                st.session_state.project_task_drafts,
+                editor_drafts,
                 key=editor_key,
                 num_rows="dynamic",
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "titulo": st.column_config.TextColumn("Título"),
-                    "habilidades_requeridas": st.column_config.TextColumn(
-                        "Habilidades (separadas por comas)"
-                    ),
                     "instrucciones": st.column_config.TextColumn("Instrucciones"),
                     "objetivo": st.column_config.TextColumn("Objetivo"),
                     "restricciones": st.column_config.TextColumn("Restricciones"),
@@ -1102,7 +1341,7 @@ else:
                     ),
                     "dificultad": st.column_config.SelectboxColumn(
                         "Dificultad",
-                        options=["Baja", "Media", "Alta"],
+                        options=list(TASK_DIFFICULTIES),
                         required=True,
                     ),
                     "claim_timeout_hours": st.column_config.NumberColumn(
@@ -1128,6 +1367,70 @@ else:
                     ),
                 },
             )
+
+            habilidades_por_tarea = []
+            if catalogo_tareas is not None:
+                st.markdown("#### Habilidades requeridas por tarea")
+                title_occurrences = {}
+                for index, task in enumerate(edited_tasks):
+                    drafted_skills = st.session_state.get(
+                        "project_task_skill_drafts", []
+                    )
+                    drafted_titles = st.session_state.get(
+                        "project_task_skill_draft_titles", []
+                    )
+                    title = str(task.get("titulo") or "").strip()
+                    title_identity = title.casefold() or f"tarea-{index + 1}"
+                    occurrence = title_occurrences.get(title_identity, 0)
+                    title_occurrences[title_identity] = occurrence + 1
+                    initial_skills = (
+                        drafted_skills[index]
+                        if (
+                            index < len(drafted_skills)
+                            and index < len(drafted_titles)
+                            and drafted_titles[index].strip().casefold()
+                            == title.casefold()
+                        )
+                        else []
+                    )
+                    if isinstance(initial_skills, str):
+                        initial_skills = initial_skills.split(",")
+                    initial_skills = [
+                        str(skill).strip()
+                        for skill in initial_skills
+                        if str(skill).strip()
+                    ]
+                    with st.expander(
+                        f"{index + 1}. {title or 'Tarea'}",
+                        expanded=True,
+                    ):
+                        selected_skills = st.multiselect(
+                            "Habilidades",
+                            options=catalogo_tareas,
+                            default=initial_skills,
+                            key=(
+                                "project_task_skills_"
+                                f"{st.session_state.project_task_draft_version}_"
+                                f"{title_identity}_{occurrence}"
+                            ),
+                            accept_new_options=True,
+                            help=(
+                                "Busca una habilidad existente o escribe una "
+                                "nueva para incorporarla al catálogo compartido."
+                            ),
+                        )
+                        render_new_skill_action(
+                            selected_skills,
+                            catalogo_tareas,
+                            f"add_task_skills_to_catalog_{index}",
+                        )
+                        habilidades_por_tarea.append(selected_skills)
+                        while len(drafted_skills) <= index:
+                            drafted_skills.append([])
+                        while len(drafted_titles) <= index:
+                            drafted_titles.append("")
+                        drafted_skills[index] = selected_skills
+                        drafted_titles[index] = title
 
             if st.button("Guardar proyecto y tareas", type="primary"):
                 if not proj_titulo.strip() or not proj_desc.strip():
@@ -1179,12 +1482,13 @@ else:
                                 missing_fields.append(
                                     f"Tarea {index}: duración entre 1 y 8 horas"
                                 )
-                        skills = task.get("habilidades_requeridas") or []
-                        if isinstance(skills, str):
-                            skills = skills.split(",")
                         normalized["habilidades_requeridas"] = [
                             str(skill).strip()
-                            for skill in skills
+                            for skill in (
+                                habilidades_por_tarea[index - 1]
+                                if index - 1 < len(habilidades_por_tarea)
+                                else []
+                            )
                             if str(skill).strip()
                         ]
                         normalized["review_mode"] = "direct"
@@ -1225,28 +1529,30 @@ else:
                                 normalized[timeout_field] = 0
                             else:
                                 normalized[timeout_field] = int(timeout)
-                        if normalized["dificultad"].casefold() not in {
-                            "baja",
-                            "media",
-                            "alta",
-                        }:
+                        if normalized["dificultad"] not in TASK_DIFFICULTIES:
                             missing_fields.append(
                                 f"Tarea {index}: dificultad debe ser "
-                                "Baja, Media o Alta"
-                            )
-                        else:
-                            normalized["dificultad"] = (
-                                normalized["dificultad"].capitalize()
+                                "Fácil, Medio o Difícil"
                             )
                         tasks_to_save.append(normalized)
 
-                    if missing_fields:
+                    if catalogo_tareas is None:
+                        st.warning(
+                            "No se pudo cargar el catálogo; inténtalo de nuevo."
+                        )
+                    elif missing_fields:
                         st.warning(
                             "Completa los campos obligatorios: "
                             + ", ".join(missing_fields)
                         )
                     else:
                         try:
+                            for task_to_save in tasks_to_save:
+                                task_to_save["habilidades_requeridas"] = (
+                                    add_skills_to_catalog(
+                                        task_to_save["habilidades_requeridas"]
+                                    )
+                                )
                             supabase.rpc(
                                 "create_project_with_workflow",
                                 {
@@ -1271,12 +1577,14 @@ else:
                                 "criterios_aceptacion": "",
                                 "modo_entrega": "Pull Request de GitHub",
                                 "duracion_estimada_horas": 4,
-                                "dificultad": "Media",
+                                "dificultad": "Medio",
                                 "repositorio_url": "",
                                 "claim_timeout_hours": 72,
                                 "peer_review_timeout_hours": 48,
                                 "creator_review_timeout_hours": 72,
                             }]
+                            st.session_state.project_task_skill_drafts = [[]]
+                            st.session_state.project_task_skill_draft_titles = [""]
                             st.session_state.project_task_draft_version += 1
                             st.session_state.clear_project_form = True
                             invalidate_user_overview()
@@ -1310,7 +1618,7 @@ else:
                             f"Plazo de esta asignación: "
                             f"{tarea_actual['deadline_at']}"
                         )
-                    render_task_details(tarea_actual)
+                    render_task_details(tarea_actual, habilidades_actuales)
                     try:
                         latest_contribution = (
                             supabase.table("contributions")
@@ -1381,7 +1689,7 @@ else:
                                 for task in compatible:
                                     with st.container(border=True):
                                         st.markdown(f"### {task['titulo']}")
-                                        render_task_details(task)
+                                        render_task_details(task, habilidades_actuales)
                                         if st.button(
                                             "Colaborar en esta tarea",
                                             key=f"claim_task_{task['id']}",
@@ -1442,6 +1750,11 @@ else:
                     )
             except Exception as e:
                 report_problem("Carga de respuesta del creador")
+            try:
+                catalogo_modulo = load_skill_catalog()
+            except Exception as error:
+                report_problem("Carga del catálogo de habilidades", error)
+                catalogo_modulo = None
             draft_key = f"module_task_drafts_{module['id']}"
             version_key = f"module_task_draft_version_{module['id']}"
             if draft_key not in st.session_state:
@@ -1457,7 +1770,7 @@ else:
                     "modo_entrega": "Pull Request de GitHub",
                     "repositorio_url": module["repositorio_url"],
                     "duracion_estimada_horas": 4,
-                    "dificultad": "Media",
+                    "dificultad": "Medio",
                     "review_mode": REVIEW_MODE_LABELS[
                         module.get("review_mode", "direct")
                     ],
@@ -1468,17 +1781,28 @@ else:
                     "review_mode",
                     REVIEW_MODE_LABELS[module.get("review_mode", "direct")],
                 )
+            skills_draft_key = f"module_task_skills_{module['id']}"
+            if skills_draft_key not in st.session_state:
+                st.session_state[skills_draft_key] = [
+                    str(task.get("habilidades_requeridas") or "").split(",")
+                    for task in st.session_state[draft_key]
+                ]
+            task_editor_rows = [
+                {
+                    field: value
+                    for field, value in task.items()
+                    if field != "habilidades_requeridas"
+                }
+                for task in st.session_state[draft_key]
+            ]
             proposed_tasks = st.data_editor(
-                st.session_state[draft_key],
+                task_editor_rows,
                 key=f"module_task_editor_{module['id']}_{st.session_state[version_key]}",
                 num_rows="dynamic",
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "titulo": st.column_config.TextColumn("Título"),
-                    "habilidades_requeridas": st.column_config.TextColumn(
-                        "Habilidades separadas por comas"
-                    ),
                     "instrucciones": st.column_config.TextColumn("Instrucciones"),
                     "objetivo": st.column_config.TextColumn("Objetivo"),
                     "restricciones": st.column_config.TextColumn("Restricciones"),
@@ -1501,10 +1825,47 @@ else:
                         "Estimación (h)", min_value=1, max_value=8, step=1
                     ),
                     "dificultad": st.column_config.SelectboxColumn(
-                        "Dificultad", options=["Baja", "Media", "Alta"]
+                        "Dificultad", options=list(TASK_DIFFICULTIES)
                     ),
                 },
             )
+            skills_by_proposed_task = []
+            if catalogo_modulo is not None:
+                st.markdown("#### Habilidades requeridas por tarea")
+                for index, task in enumerate(proposed_tasks):
+                    initial_skills = (
+                        st.session_state[skills_draft_key][index]
+                        if index < len(st.session_state[skills_draft_key])
+                        else []
+                    )
+                    if isinstance(initial_skills, str):
+                        initial_skills = initial_skills.split(",")
+                    initial_skills = [
+                        str(skill).strip()
+                        for skill in initial_skills
+                        if str(skill).strip()
+                    ]
+                    with st.expander(
+                        f"{index + 1}. {task.get('titulo') or 'Tarea'}",
+                        expanded=True,
+                    ):
+                        selected_skills = st.multiselect(
+                            "Habilidades",
+                            options=catalogo_modulo,
+                            default=initial_skills,
+                            key=f"{skills_draft_key}_{st.session_state[version_key]}_{index}",
+                            accept_new_options=True,
+                            help=(
+                                "Busca una habilidad o escribe una nueva para "
+                                "añadirla al catálogo compartido."
+                            ),
+                        )
+                        render_new_skill_action(
+                            selected_skills,
+                            catalogo_modulo,
+                            f"add_module_task_skills_{module['id']}_{index}",
+                        )
+                        skills_by_proposed_task.append(selected_skills)
             if st.button(
                 "Enviar propuesta al creador",
                 type="primary",
@@ -1537,12 +1898,13 @@ else:
                     for field, value in normalized_task.items():
                         if not value:
                             errors.append(f"Tarea {index}: falta {field}")
-                    raw_skills = row.get("habilidades_requeridas") or ""
-                    if isinstance(raw_skills, str):
-                        raw_skills = raw_skills.split(",")
                     normalized_task["habilidades_requeridas"] = [
                         str(skill).strip()
-                        for skill in raw_skills
+                        for skill in (
+                            skills_by_proposed_task[index - 1]
+                            if index - 1 < len(skills_by_proposed_task)
+                            else []
+                        )
                         if str(skill).strip()
                     ]
                     if not normalized_task["habilidades_requeridas"]:
@@ -1561,19 +1923,25 @@ else:
                         )
                     else:
                         normalized_task["duracion_estimada_horas"] = int(duration)
-                    if normalized_task["dificultad"] not in {
-                        "Baja",
-                        "Media",
-                        "Alta",
-                    }:
+                    if normalized_task["dificultad"] not in TASK_DIFFICULTIES:
                         errors.append(f"Tarea {index}: dificultad no válida")
                     tasks_to_propose.append(normalized_task)
                 if not tasks_to_propose:
                     errors.append("Añade al menos una tarea.")
-                if errors:
+                if catalogo_modulo is None:
+                    st.warning(
+                        "No se pudo cargar el catálogo; inténtalo de nuevo."
+                    )
+                elif errors:
                     st.warning(" ".join(errors))
                 else:
                     try:
+                        for proposed_task in tasks_to_propose:
+                            proposed_task["habilidades_requeridas"] = (
+                                add_skills_to_catalog(
+                                    proposed_task["habilidades_requeridas"]
+                                )
+                            )
                         supabase.rpc(
                             "submit_module_task_proposal",
                             {
@@ -1594,11 +1962,12 @@ else:
                             "modo_entrega": "Pull Request de GitHub",
                             "repositorio_url": module["repositorio_url"],
                             "duracion_estimada_horas": 4,
-                            "dificultad": "Media",
+                            "dificultad": "Medio",
                             "review_mode": REVIEW_MODE_LABELS[
                                 module.get("review_mode", "direct")
                             ],
                         }]
+                        st.session_state[skills_draft_key] = [[]]
                         st.session_state[version_key] += 1
                         invalidate_user_overview()
                         st.rerun()
@@ -1701,7 +2070,7 @@ else:
                 else:
                     tarea = res_tarea.data[0]
                     st.markdown(f"### {tarea['titulo']}")
-                    render_task_details(tarea)
+                    render_task_details(tarea, habilidades_actuales)
                     task_review_mode = tarea.get("review_mode")
                     if task_review_mode == "layered":
                         st.caption(

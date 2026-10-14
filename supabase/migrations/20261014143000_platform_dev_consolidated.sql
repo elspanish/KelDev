@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email text NOT NULL DEFAULT '',
     nombre text NOT NULL DEFAULT '',
-    habilidades jsonb NOT NULL DEFAULT '{}'::jsonb,
+    habilidades jsonb NOT NULL DEFAULT '[]'::jsonb,
     reputacion integer NOT NULL DEFAULT 0,
     tareas_completadas integer NOT NULL DEFAULT 0
 );
@@ -58,8 +58,8 @@ ALTER TABLE public.tasks
     ADD COLUMN IF NOT EXISTS modo_entrega text NOT NULL DEFAULT 'Pull Request de GitHub',
     ADD COLUMN IF NOT EXISTS duracion_estimada_horas integer NOT NULL DEFAULT 4
         CHECK (duracion_estimada_horas BETWEEN 1 AND 8),
-    ADD COLUMN IF NOT EXISTS dificultad text NOT NULL DEFAULT 'Media'
-        CHECK (dificultad IN ('Baja', 'Media', 'Alta'));
+    ADD COLUMN IF NOT EXISTS dificultad text NOT NULL DEFAULT 'Medio'
+        CHECK (dificultad IN ('Fácil', 'Medio', 'Difícil'));
 
 ALTER TABLE public.contributions
     ADD COLUMN IF NOT EXISTS github_owner text,
@@ -93,7 +93,7 @@ BEGIN
             ),
             'nombre', coalesce(NEW.raw_user_meta_data->>'nombre', ''),
             'descripcion', '',
-            'habilidades', '{}'::jsonb,
+            'habilidades', '[]'::jsonb,
             'reputacion', 0,
             'tareas_completadas', 0
         )
@@ -133,7 +133,7 @@ SELECT profile.id, profile.email, profile.nombre, profile.descripcion,
          ),
          'nombre', coalesce(auth_user.raw_user_meta_data->>'nombre', ''),
          'descripcion', '',
-         'habilidades', '{}'::jsonb,
+         'habilidades', '[]'::jsonb,
          'reputacion', 0,
          'tareas_completadas', 0
      )
@@ -211,8 +211,8 @@ BEGIN
         ) IS NOT TRUE THEN
             RAISE EXCEPTION 'La duración de cada tarea debe ser de 1 a 8 horas';
         END IF;
-        IF coalesce(v_item->>'dificultad', '') NOT IN ('Baja', 'Media', 'Alta') THEN
-            RAISE EXCEPTION 'La dificultad debe ser Baja, Media o Alta';
+        IF coalesce(v_item->>'dificultad', '') NOT IN ('Fácil', 'Medio', 'Difícil') THEN
+            RAISE EXCEPTION 'La dificultad debe ser Fácil, Medio o Difícil';
         END IF;
 
         v_task := jsonb_populate_record(
@@ -233,7 +233,7 @@ BEGIN
                     coalesce(v_item->>'modo_entrega', 'Pull Request de GitHub'),
                 'duracion_estimada_horas',
                     coalesce(v_item->'duracion_estimada_horas', '4'::jsonb),
-                'dificultad', coalesce(v_item->>'dificultad', 'Media'),
+                'dificultad', coalesce(v_item->>'dificultad', 'Medio'),
                 'estado', 'pendiente',
                 'asignado_a', NULL
             )
@@ -899,7 +899,7 @@ BEGIN
             RAISE EXCEPTION 'Todas las tareas deben requerir al menos una habilidad';
         END IF;
         IF coalesce(v_item->>'duracion_estimada_horas', '') !~ '^[1-8]$'
-           OR coalesce(v_item->>'dificultad', '') NOT IN ('Baja', 'Media', 'Alta') THEN
+           OR coalesce(v_item->>'dificultad', '') NOT IN ('Fácil', 'Medio', 'Difícil') THEN
             RAISE EXCEPTION 'Duración (1-8 horas) o dificultad no válida';
         END IF;
         IF v_item->>'review_mode' IS DISTINCT FROM 'direct'
@@ -1188,7 +1188,7 @@ BEGIN
            OR coalesce(v_task->>'repositorio_url', '')
               !~ '^https://github\.com/[^/]+/[^/?#]+(/|$)'
            OR coalesce(v_task->>'duracion_estimada_horas', '') !~ '^[1-8]$'
-           OR coalesce(v_task->>'dificultad', '') NOT IN ('Baja', 'Media', 'Alta') THEN
+           OR coalesce(v_task->>'dificultad', '') NOT IN ('Fácil', 'Medio', 'Difícil') THEN
             RAISE EXCEPTION 'Completa todos los campos válidos de cada tarea propuesta';
         END IF;
         IF jsonb_typeof(v_task->'habilidades_requeridas') IS DISTINCT FROM 'array' THEN
@@ -2218,6 +2218,446 @@ GRANT EXECUTE ON FUNCTION public.creator_decide_layered_task(text, text, text) T
 GRANT EXECUTE ON FUNCTION public.approve_layered_task_with_pr(text, text, text, text, integer) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.register_layered_final_pr(text, text, text, text, integer) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.expire_task_workflows() TO service_role;
+
+-- Shared skills catalog and per-skill reputation.
+ALTER TABLE public.profiles
+    ADD COLUMN IF NOT EXISTS reputacion_habilidades jsonb NOT NULL
+        DEFAULT '{}'::jsonb;
+
+ALTER TABLE public.contributions
+    ADD COLUMN IF NOT EXISTS reputacion_detalle jsonb NOT NULL
+        DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS reputacion_detalle_completo boolean NOT NULL
+        DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS public.skill_catalog (
+    nombre text NOT NULL,
+    nombre_normalizado text GENERATED ALWAYS AS (lower(btrim(nombre))) STORED
+        UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT skill_catalog_name_not_empty CHECK (
+        length(btrim(nombre)) BETWEEN 1 AND 80
+    )
+);
+
+ALTER TABLE public.skill_catalog ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Authenticated users can view skill catalog"
+    ON public.skill_catalog;
+CREATE POLICY "Authenticated users can view skill catalog"
+    ON public.skill_catalog FOR SELECT TO authenticated USING (true);
+GRANT SELECT ON public.skill_catalog TO authenticated;
+ALTER TABLE public.profiles
+    ALTER COLUMN habilidades SET DEFAULT '[]'::jsonb;
+
+CREATE OR REPLACE FUNCTION public.all_skills_in_catalog(p_skills jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SET search_path = public
+AS $$
+DECLARE
+    v_skill text;
+BEGIN
+    IF jsonb_typeof(p_skills) IS DISTINCT FROM 'array' THEN
+        RETURN false;
+    END IF;
+    FOR v_skill IN SELECT value FROM jsonb_array_elements_text(p_skills)
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM public.skill_catalog
+             WHERE nombre_normalizado = lower(btrim(v_skill))
+        ) THEN
+            RETURN false;
+        END IF;
+    END LOOP;
+    RETURN true;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.all_skills_in_catalog(jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.all_skills_in_catalog(jsonb)
+    TO authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.add_skill_to_catalog(p_nombre text)
+RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_nombre text := btrim(coalesce(p_nombre, ''));
+    v_result text;
+BEGIN
+    IF auth.uid() IS NULL THEN
+        RAISE EXCEPTION 'Debes iniciar sesión para añadir una habilidad';
+    END IF;
+    IF length(v_nombre) NOT BETWEEN 1 AND 80 THEN
+        RAISE EXCEPTION 'La habilidad debe tener entre 1 y 80 caracteres';
+    END IF;
+
+    INSERT INTO public.skill_catalog (nombre)
+    VALUES (v_nombre)
+    ON CONFLICT (nombre_normalizado)
+    DO UPDATE SET nombre = public.skill_catalog.nombre
+    RETURNING nombre INTO v_result;
+    RETURN v_result;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.add_skill_to_catalog(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.add_skill_to_catalog(text) TO authenticated;
+
+UPDATE public.profiles
+   SET reputacion_habilidades = habilidades
+ WHERE jsonb_typeof(habilidades) = 'object'
+   AND reputacion_habilidades = '{}'::jsonb;
+
+UPDATE public.profiles
+   SET habilidades = coalesce((
+       SELECT jsonb_agg(skill ORDER BY skill)
+         FROM jsonb_object_keys(profiles.habilidades) AS keys(skill)
+   ), '[]'::jsonb)
+ WHERE jsonb_typeof(habilidades) = 'object';
+
+DO $$
+DECLARE
+    v_profile record;
+    v_skill text;
+    v_skill_index integer;
+    v_skill_count integer;
+    v_unattributed integer;
+    v_skill_scores jsonb;
+    v_total integer;
+BEGIN
+    FOR v_profile IN
+        SELECT id, habilidades, reputacion, reputacion_habilidades
+          FROM public.profiles
+    LOOP
+        v_skill_scores := coalesce(v_profile.reputacion_habilidades, '{}'::jsonb);
+        SELECT count(*) INTO v_skill_count
+          FROM public.jsonb_text_values(v_profile.habilidades);
+        SELECT coalesce(sum(
+            CASE WHEN value ~ '^[0-9]+$' THEN value::integer ELSE 0 END
+        ), 0)::integer
+          INTO v_total
+          FROM jsonb_each_text(v_skill_scores);
+        v_unattributed := greatest(
+            coalesce(v_profile.reputacion, 0) - v_total,
+            0
+        );
+        v_skill_index := 0;
+
+        IF v_skill_count > 0 AND v_unattributed > 0 THEN
+            FOR v_skill IN
+                SELECT DISTINCT skill
+                  FROM public.jsonb_text_values(v_profile.habilidades)
+                       AS owned(skill)
+                 ORDER BY skill
+            LOOP
+                v_skill_index := v_skill_index + 1;
+                v_skill_scores := jsonb_set(
+                    v_skill_scores,
+                    ARRAY[v_skill],
+                    to_jsonb(
+                        coalesce(
+                            CASE
+                                WHEN v_skill_scores->>v_skill ~ '^[0-9]+$'
+                                THEN (v_skill_scores->>v_skill)::integer
+                                ELSE 0
+                            END,
+                            0
+                        )
+                        + (v_unattributed / v_skill_count)
+                        + CASE
+                            WHEN v_skill_index <= mod(
+                                v_unattributed,
+                                v_skill_count
+                            ) THEN 1
+                            ELSE 0
+                          END
+                    ),
+                    true
+                );
+            END LOOP;
+        END IF;
+
+        SELECT coalesce(sum(
+            CASE WHEN value ~ '^[0-9]+$' THEN value::integer ELSE 0 END
+        ), 0)::integer
+          INTO v_total
+          FROM jsonb_each_text(v_skill_scores);
+        UPDATE public.profiles
+           SET reputacion_habilidades = v_skill_scores,
+               reputacion = v_total
+         WHERE id = v_profile.id;
+    END LOOP;
+END;
+$$;
+
+INSERT INTO public.skill_catalog (nombre)
+SELECT DISTINCT btrim(skill)
+  FROM (
+      SELECT value AS skill
+        FROM public.profiles profile
+        CROSS JOIN LATERAL public.jsonb_text_values(profile.habilidades)
+             AS profile_skills(value)
+      UNION ALL
+      SELECT value AS skill
+        FROM public.tasks task
+        CROSS JOIN LATERAL public.jsonb_text_values(task.habilidades_requeridas)
+             AS task_skills(value)
+  ) AS existing_skills
+ WHERE length(btrim(skill)) BETWEEN 1 AND 80
+ON CONFLICT (nombre_normalizado) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION public.validate_profile_skills()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+    IF NOT public.all_skills_in_catalog(NEW.habilidades) THEN
+        RAISE EXCEPTION 'Todas las habilidades del perfil deben estar en el catálogo';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS validate_profile_skills_before_insert
+    ON public.profiles;
+DROP TRIGGER IF EXISTS validate_profile_skills_before_update
+    ON public.profiles;
+CREATE TRIGGER validate_profile_skills_before_insert
+    BEFORE INSERT ON public.profiles
+    FOR EACH ROW EXECUTE FUNCTION public.validate_profile_skills();
+CREATE TRIGGER validate_profile_skills_before_update
+    BEFORE UPDATE OF habilidades ON public.profiles
+    FOR EACH ROW EXECUTE FUNCTION public.validate_profile_skills();
+
+CREATE OR REPLACE FUNCTION public.validate_task_skills()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+    IF NOT public.all_skills_in_catalog(NEW.habilidades_requeridas) THEN
+        RAISE EXCEPTION 'Todas las habilidades de la tarea deben estar en el catálogo';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS validate_task_skills_before_insert ON public.tasks;
+DROP TRIGGER IF EXISTS validate_task_skills_before_update ON public.tasks;
+CREATE TRIGGER validate_task_skills_before_insert
+    BEFORE INSERT ON public.tasks
+    FOR EACH ROW EXECUTE FUNCTION public.validate_task_skills();
+CREATE TRIGGER validate_task_skills_before_update
+    BEFORE UPDATE OF habilidades_requeridas ON public.tasks
+    FOR EACH ROW EXECUTE FUNCTION public.validate_task_skills();
+
+DO $$
+DECLARE
+    v_constraint record;
+BEGIN
+    FOR v_constraint IN
+        SELECT conname
+          FROM pg_constraint
+         WHERE conrelid = 'public.tasks'::regclass
+           AND contype = 'c'
+           AND pg_get_constraintdef(oid) ILIKE '%dificultad%'
+    LOOP
+        EXECUTE format(
+            'ALTER TABLE public.tasks DROP CONSTRAINT %I',
+            v_constraint.conname
+        );
+    END LOOP;
+END;
+$$;
+
+UPDATE public.tasks
+   SET dificultad = CASE dificultad
+       WHEN 'Baja' THEN 'Fácil'
+       WHEN 'Media' THEN 'Medio'
+       WHEN 'Alta' THEN 'Difícil'
+       ELSE dificultad
+   END;
+ALTER TABLE public.tasks
+    ALTER COLUMN dificultad SET DEFAULT 'Medio',
+    ADD CONSTRAINT tasks_dificultad_check
+        CHECK (dificultad IN ('Fácil', 'Medio', 'Difícil'));
+
+UPDATE public.module_task_proposals proposal
+   SET tasks = (
+       SELECT coalesce(jsonb_agg(
+           CASE task->>'dificultad'
+               WHEN 'Baja' THEN jsonb_set(task, '{dificultad}', '"Fácil"')
+               WHEN 'Media' THEN jsonb_set(task, '{dificultad}', '"Medio"')
+               WHEN 'Alta' THEN jsonb_set(task, '{dificultad}', '"Difícil"')
+               ELSE task
+           END
+       ), '[]'::jsonb)
+         FROM jsonb_array_elements(proposal.tasks) AS proposal_tasks(task)
+   )
+ WHERE jsonb_typeof(proposal.tasks) = 'array';
+
+CREATE OR REPLACE FUNCTION public.complete_merged_pr(
+    p_github_owner text,
+    p_github_repo text,
+    p_github_pr_number integer,
+    p_merged boolean
+)
+RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_contribution public.contributions%ROWTYPE;
+    v_task public.tasks%ROWTYPE;
+    v_skill text;
+    v_reward integer;
+    v_awarded_details jsonb := '{}'::jsonb;
+    v_skill_scores jsonb;
+    v_total_reputation integer;
+BEGIN
+    SELECT * INTO v_contribution
+      FROM public.contributions
+     WHERE lower(github_owner) = lower(p_github_owner)
+       AND lower(github_repo) = lower(p_github_repo)
+       AND github_pr_number = p_github_pr_number
+     FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN 'not_found';
+    END IF;
+
+    SELECT * INTO v_task
+      FROM public.tasks
+     WHERE id = v_contribution.task_id
+     FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'No se encontró la tarea asociada a la contribución';
+    END IF;
+
+    IF p_merged THEN
+        IF v_contribution.workflow_state NOT IN ('awaiting_merge', 'completed') THEN
+            RETURN 'not_ready_for_merge';
+        END IF;
+        IF NOT v_contribution.reputacion_otorgada THEN
+            v_reward := CASE v_task.dificultad
+                WHEN 'Fácil' THEN 50
+                WHEN 'Medio' THEN 80
+                WHEN 'Difícil' THEN 140
+                ELSE NULL
+            END;
+            IF v_reward IS NULL THEN
+                RAISE EXCEPTION 'La dificultad de la tarea no es válida';
+            END IF;
+
+            SELECT coalesce(jsonb_object_agg(skill, v_reward), '{}'::jsonb)
+              INTO v_awarded_details
+              FROM (
+                  SELECT DISTINCT ON (lower(btrim(owned.skill)))
+                         btrim(owned.skill) AS skill
+                    FROM public.jsonb_text_values(
+                        to_jsonb(v_task.habilidades_requeridas)
+                    ) AS required(skill)
+                    JOIN public.profiles profile
+                      ON profile.id = v_contribution.usuario_id
+                    CROSS JOIN LATERAL public.jsonb_text_values(
+                        to_jsonb(profile.habilidades)
+                    ) AS owned(skill)
+                   WHERE lower(btrim(required.skill)) = lower(btrim(owned.skill))
+                   ORDER BY lower(btrim(owned.skill)), btrim(owned.skill)
+              ) AS matched_skills;
+
+            SELECT reputacion_habilidades INTO v_skill_scores
+              FROM public.profiles
+             WHERE id = v_contribution.usuario_id
+             FOR UPDATE;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'No se encontró el perfil del colaborador';
+            END IF;
+            v_skill_scores := coalesce(v_skill_scores, '{}'::jsonb);
+
+            FOR v_skill IN
+                SELECT key FROM jsonb_each(v_awarded_details)
+            LOOP
+                v_skill_scores := jsonb_set(
+                    v_skill_scores,
+                    ARRAY[v_skill],
+                    to_jsonb(
+                        coalesce(
+                            CASE
+                                WHEN v_skill_scores->>v_skill ~ '^[0-9]+$'
+                                THEN (v_skill_scores->>v_skill)::integer
+                                ELSE 0
+                            END,
+                            0
+                        ) + v_reward
+                    ),
+                    true
+                );
+            END LOOP;
+
+            SELECT coalesce(sum(
+                CASE WHEN value ~ '^[0-9]+$' THEN value::integer ELSE 0 END
+            ), 0)::integer
+              INTO v_total_reputation
+              FROM jsonb_each_text(v_skill_scores);
+            UPDATE public.profiles
+               SET reputacion_habilidades = v_skill_scores,
+                   reputacion = v_total_reputation,
+                   tareas_completadas = coalesce(tareas_completadas, 0) + 1
+             WHERE id = v_contribution.usuario_id;
+
+            UPDATE public.contributions
+               SET estado = 'aceptada',
+                   workflow_state = 'completed',
+                   reputacion_detalle = v_awarded_details,
+                   reputacion_detalle_completo = true,
+                   reputacion_otorgada = true
+             WHERE id = v_contribution.id;
+            UPDATE public.tasks
+               SET estado = 'completada', deadline_at = NULL
+             WHERE id = v_task.id;
+            RETURN 'completed';
+        END IF;
+        RETURN 'already_completed';
+    END IF;
+
+    IF v_contribution.workflow_state = 'awaiting_merge' THEN
+        UPDATE public.contributions
+           SET estado = 'rechazada', workflow_state = 'changes_requested',
+               creator_feedback = 'La Pull Request final se cerró sin merge.'
+         WHERE id = v_contribution.id AND NOT reputacion_otorgada;
+        UPDATE public.tasks
+           SET estado = 'en_progreso',
+               deadline_at = now() + make_interval(hours => v_task.claim_timeout_hours)
+         WHERE id = v_task.id;
+        RETURN 'rejected';
+    END IF;
+    UPDATE public.contributions
+       SET estado = 'rechazada', workflow_state = 'rejected'
+     WHERE id = v_contribution.id AND NOT reputacion_otorgada;
+    UPDATE public.tasks
+       SET estado = 'pendiente', asignado_a = NULL, deadline_at = NULL
+     WHERE id = v_task.id AND estado = 'en_revision';
+    RETURN 'rejected';
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.complete_merged_pr(text, text, integer, boolean)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.complete_merged_pr(text, text, integer, boolean)
+    TO service_role;
+
+-- Preserve the single-file migration directory while removing obsolete RPC
+-- overloads that cause ambiguous calls through PostgREST.
+DROP FUNCTION IF EXISTS public.create_project_with_workflow(text, text, jsonb);
+DROP FUNCTION IF EXISTS public.claim_task(bigint);
+DROP FUNCTION IF EXISTS public.submit_task_pr(bigint, text, text, text, integer);
+NOTIFY pgrst, 'reload schema';
 GRANT SELECT ON public.task_reviews, public.project_modules,
     public.module_task_proposals TO authenticated;
 
@@ -2552,7 +2992,7 @@ BEGIN
             RAISE EXCEPTION 'Todas las tareas deben requerir al menos una habilidad';
         END IF;
         IF coalesce(v_task->>'duracion_estimada_horas', '') !~ '^[1-8]$'
-           OR coalesce(v_task->>'dificultad', '') NOT IN ('Baja', 'Media', 'Alta') THEN
+           OR coalesce(v_task->>'dificultad', '') NOT IN ('Fácil', 'Medio', 'Difícil') THEN
             RAISE EXCEPTION 'Duración (1-8 horas) o dificultad no válida';
         END IF;
         IF v_task->>'review_mode' IS DISTINCT FROM 'direct'

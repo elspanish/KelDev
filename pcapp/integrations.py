@@ -20,7 +20,7 @@ TASK_FIELDS = (
     "duracion_estimada_horas",
     "dificultad",
 )
-TASK_DIFFICULTIES = {"baja", "media", "alta"}
+TASK_DIFFICULTIES = {"fácil", "medio", "difícil"}
 
 
 def parse_github_pull_request(url):
@@ -121,9 +121,9 @@ def _clean_task(task):
         )
     if cleaned["dificultad"].casefold() not in TASK_DIFFICULTIES:
         raise ValueError(
-            "La dificultad debe ser Baja, Media o Alta."
+            "La dificultad debe ser Fácil, Medio o Difícil."
         )
-    cleaned["dificultad"] = cleaned["dificultad"].capitalize()
+    cleaned["dificultad"] = cleaned["dificultad"].title()
     if not 1 <= cleaned["duracion_estimada_horas"] <= 8:
         raise ValueError(
             "La duración estimada debe ser de 1 a 8 horas para una persona."
@@ -140,7 +140,7 @@ debe poder completarla una sola persona con las habilidades requeridas.
 Mantén cada tarea en un tamaño asequible: estima esfuerzo individual en horas,
 limita cada tarea a un máximo de 8 horas de trabajo y divídela en tareas más
 pequeñas si supera ese límite. No confundas horas de trabajo con días
-calendario. Asigna una dificultad realista: Baja, Media o Alta; evita que una
+calendario. Asigna una dificultad realista: Fácil, Medio o Difícil; evita que una
 tarea sea amplia o dependa de varias personas. Ordena las tareas en el orden
 lógico de implementación y evita duplicidades.
 
@@ -159,7 +159,7 @@ Devuelve exclusivamente JSON válido con esta estructura:
       "modo_entrega": "Pull Request a GitHub; indicar qué debe incluir, sin URL",
       "repositorio_url": "URL del repositorio destino de GitHub",
       "duracion_estimada_horas": 4,
-      "dificultad": "Media"
+      "dificultad": "Medio"
     }}
   ]
 }}
