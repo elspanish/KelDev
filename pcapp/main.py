@@ -634,11 +634,13 @@ if "user" not in st.session_state:
         report_problem("No se pudo recuperar la sesión de Supabase")
         st.session_state.user = None
 
-auth_code = st.query_params.get("code")
-if auth_code:
+code = st.query_params.get("code")
+if code:
     try:
-        auth_response = supabase.auth.exchange_code_for_session(auth_code)
-        st.session_state["user"] = auth_response.user
+        session = supabase.auth.exchange_code_for_session(
+            {"auth_code": code}
+        )
+        st.session_state["user"] = session.user
         st.query_params.clear()
         st.rerun()
     except Exception:
@@ -655,10 +657,10 @@ if st.session_state.user is None:
         try:
             try:
                 redirect_url = st.secrets.get(
-                    "REDIRECT_URL", "http://localhost:3000"
+                    "REDIRECT_URL", "https://tu-app.streamlit.app"
                 )
             except StreamlitSecretNotFoundError:
-                redirect_url = "http://localhost:3000"
+                redirect_url = "https://tu-app.streamlit.app"
             oauth_response = supabase.auth.sign_in_with_oauth({
                 "provider": "github",
                 "options": {
