@@ -32,8 +32,8 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=15 * mm,
-        title="Informe profesional - Plataforma Dev",
-        author="Plataforma Dev",
+        title="Informe profesional - KelDev",
+        author="KelDev",
         subject="Perfil y colaboraciones",
     )
     base_styles = getSampleStyleSheet()
@@ -90,7 +90,7 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
     )
 
     story = [
-        Paragraph("Plataforma Dev", title_style),
+        Paragraph("KelDev", title_style),
         Paragraph(
             "INFORME PROFESIONAL DE COLABORACIÓN Y HABILIDADES",
             subtitle_style,
@@ -277,7 +277,7 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
     story.extend([
         Spacer(1, 10),
         KeepTogether(Paragraph(
-            "Documento generado automáticamente por Plataforma Dev a partir "
+            "Documento generado automáticamente por KelDev a partir "
             "de los datos registrados en la plataforma en la fecha indicada.",
             subtitle_style,
         )),

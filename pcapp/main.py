@@ -16,6 +16,7 @@ from integrations import (
     validate_github_code_url,
 )
 from profile_export import build_profile_pdf
+from skills import prepare_skill_options
 
 REVIEW_MODE_LABELS = {"direct": "Directa", "layered": "Por capas"}
 REVIEW_MODE_VALUES = {
@@ -470,7 +471,7 @@ def render_task_details(task, user_skills=None):
 
 # 1. Cargar variables de entorno y configuración
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
-st.set_page_config(page_title="Plataforma Dev", layout="wide")
+st.set_page_config(page_title="KelDev", layout="wide")
 st.markdown(
     """
     <style>
@@ -647,7 +648,7 @@ if st.session_state.user is None and st.query_params.get("code"):
 # PANTALLA 1: AUTENTICACIÓN (LOGIN / REGISTRO)
 # ---------------------------------------------------------
 if st.session_state.user is None:
-    st.title("Plataforma Dev")
+    st.title("KelDev")
     st.caption("Colabora, crea proyectos y desarrolla tus habilidades.")
 
     with st.container(border=True):
@@ -754,7 +755,7 @@ else:
         st.session_state.opcion_actual = "Mi Perfil"
 
     with st.sidebar:
-        st.title("Plataforma Dev")
+        st.title("KelDev")
         st.caption("Tu espacio para construir en comunidad")
         st.divider()
         st.markdown("**Sesión activa**")
@@ -966,7 +967,7 @@ else:
                         st.download_button(
                             "Descargar informe profesional (PDF)",
                             data=perfil_pdf_bytes,
-                            file_name="informe-profesional-plataforma-dev.pdf",
+                            file_name="informe-profesional-keldev.pdf",
                             mime="application/pdf",
                             width="stretch",
                         )
@@ -1400,14 +1401,18 @@ else:
                         for skill in initial_skills
                         if str(skill).strip()
                     ]
+                    skill_options, selected_defaults = prepare_skill_options(
+                        catalogo_tareas,
+                        initial_skills,
+                    )
                     with st.expander(
                         f"{index + 1}. {title or 'Tarea'}",
                         expanded=True,
                     ):
                         selected_skills = st.multiselect(
                             "Habilidades",
-                            options=catalogo_tareas,
-                            default=initial_skills,
+                            options=skill_options,
+                            default=selected_defaults,
                             key=(
                                 "project_task_skills_"
                                 f"{st.session_state.project_task_draft_version}_"

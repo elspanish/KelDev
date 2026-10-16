@@ -30,7 +30,7 @@ class ProfilePdfExportTests(unittest.TestCase):
 
         self.assertTrue(pdf.startswith(b"%PDF-"))
         self.assertTrue(pdf.rstrip().endswith(b"%%EOF"))
-        self.assertIn(b"Plataforma Dev", pdf)
+        self.assertIn(b"KelDev", pdf)
 
     def test_builds_report_when_profile_has_no_skills_or_contributions(self):
         pdf = build_profile_pdf(

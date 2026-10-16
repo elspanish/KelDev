@@ -1,4 +1,4 @@
-# Plataforma Dev
+# KelDev
 
 Aplicación Streamlit para crear proyectos divididos en tareas, asignarlas por
 compatibilidad de habilidades y completar las entregas cuando GitHub detecta el
@@ -21,11 +21,13 @@ las tareas manualmente.
 
 ## Preparar Supabase y GitHub
 
-1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La única migración
+1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La migración
    `20261014143000_platform_dev_consolidated.sql` crea o actualiza el esquema,
    el catálogo compartido de habilidades y las funciones de reputación.
+   `20261016170000_claim_task_respects_module_assignments.sql` evita aceptar
+   una tarea mientras el usuario tiene un módulo en progreso.
    Si este proyecto ya aplicó las versiones anteriores, consolida primero su
-   historial para que coincida con el único archivo local:
+   historial para que coincida con las migraciones locales:
 
    ```sh
    supabase migration repair --status reverted \
@@ -34,8 +36,8 @@ las tareas manualmente.
    ```
 
    Hazlo solo después de confirmar que las copias de seguridad y el proyecto
-   remoto son los correctos. La migración consolidada vuelve a aplicar el
-   esquema de forma idempotente. En una instalación nueva, ejecuta
+   remoto son los correctos. Las migraciones vuelven a aplicar los cambios de
+   forma idempotente. En una instalación nueva, ejecuta
    `supabase db push`.
    `project_modules.project_id` conserva el tipo `bigint` y su relación con
    `projects`, mientras que las asignaciones y revisiones reciben los campos y
@@ -142,10 +144,10 @@ ello, una expiración puede procesarse hasta cinco minutos después del límite.
 Las PR abiertas no se cierran automáticamente al vencer el plazo: el creador
 debe cerrarlas en GitHub si la tarea vuelve a estar disponible.
 
-El flujo indicado al crear el proyecto es el valor predeterminado. Cada tarea
-puede usar revisión directa o revisión por capas, también cuando se redacta a
-partir de un módulo; las propuestas heredan el flujo del módulo salvo que el
-proponente lo cambie en esa tarea.
+La creación estándar usa revisión directa. Las secciones «Revisar tareas» y
+«Revisión del creador» gestionan las tareas por capas que ya estén en curso;
+la creación de módulos y propuestas está deshabilitada actualmente en la
+interfaz.
 
 Gemini recibe solo el título y la descripción del proyecto y devuelve tareas
 editables con estimación de hasta 8 horas por persona y dificultad
@@ -159,14 +161,13 @@ revisarse antes de publicarlas.
 
 ## Alcance de esta versión
 
-Está implementado el ciclo de tareas directas y por capas, la redacción y
-aprobación de propuestas a partir de módulos, vencimientos y reputación. Las
-asignaciones y revisiones aparecen en las secciones correspondientes de la
-aplicación; no se envían notificaciones push ni correos en esta versión. En
-una revisión, el colaborador puede aceptar, pedir cambios o aportar un enlace
-a una versión que editó fuera de la plataforma; esta no modifica repositorios
-de GitHub directamente. La creación de la PR final también se hace en GitHub
-por el creador; el webhook confirma su merge.
+La interfaz actual permite crear y completar tareas directas. El backend
+también conserva las colas de revisión por capas y los flujos de módulos para
+no abandonar trabajo existente, aunque su creación está deshabilitada en la
+interfaz. Las asignaciones y revisiones aparecen en las secciones
+correspondientes; no se envían notificaciones push ni correos en esta versión.
+La plataforma no modifica repositorios de GitHub directamente. El creador
+registra la PR final en GitHub y el webhook confirma su merge.
 La interfaz utiliza un tema claro y muestra la ficha completa de la tarea al
 colaborador asignado y a quienes la revisan.
 Al iniciar sesión, el perfil carga desde Supabase las habilidades, tareas y

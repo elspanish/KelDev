@@ -1,4 +1,4 @@
-# Instrucciones de Desarrollo: Plataforma Dev (ECC Framework)
+# Instrucciones de Desarrollo: KelDev (ECC Framework)
 
 ## 1. Contexto Tecnológico
 - **UI Framework:** Streamlit (No usar FastAPI, Tkinter ni Flask).
@@ -19,5 +19,5 @@
 - `contributions`: id (PK), task_id (FK), usuario_id (UUID, FK), github_pr_url (text), estado ('pendiente_revision', 'aceptada', 'rechazada'), puntuacion (int).
 
 ## 4. Lógica de Negocio Automática
-- Al aprobar una entrega: `reputacion = reputacion_actual + (puntuacion * 100)` y `tareas_completadas = tareas_completadas + 1`.
+- Al fusionar una entrega: suma 50, 80 o 140 puntos por cada habilidad requerida coincidente, según la dificultad (Fácil, Medio o Difícil). Actualiza `reputacion_habilidades`, recalcula `reputacion` y aumenta `tareas_completadas` una sola vez.
 - Filtrar siempre los datos del usuario usando su UUID (`id`), NUNCA por su nombre de usuario.
