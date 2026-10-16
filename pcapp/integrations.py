@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 
 GEMINI_MAX_ATTEMPTS = 3
 GEMINI_RETRYABLE_ERROR_CODES = {408, 429, 500, 502, 503, 504}
+RETIRED_GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 TASK_FIELDS = (
     "titulo",
@@ -206,8 +208,23 @@ def generate_project_tasks(title, description):
         ) from gemini_error
 
 
+def _get_config_value(name, default=None):
+    value = os.getenv(name)
+    if value:
+        return value
+
+    import streamlit as st
+    from streamlit.errors import StreamlitSecretNotFoundError
+
+    try:
+        value = st.secrets.get(name)
+    except StreamlitSecretNotFoundError:
+        return default
+    return str(value) if value else default
+
+
 def _generate_with_groq(prompt):
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = _get_config_value("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError(
             "Falta configurar GROQ_API_KEY para usar Groq."
@@ -217,7 +234,7 @@ def _generate_with_groq(prompt):
 
     client = Groq(api_key=api_key, timeout=30.0, max_retries=1)
     response = client.chat.completions.create(
-        model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+        model=_get_config_value("GROQ_MODEL", "llama-3.1-8b-instant"),
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )
@@ -233,7 +250,7 @@ def _generate_with_groq(prompt):
 
 
 def _generate_with_gemini(prompt):
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = _get_config_value("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
             "Falta configurar GEMINI_API_KEY para Google AI Studio."
@@ -244,11 +261,18 @@ def _generate_with_gemini(prompt):
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    fallback_model = os.getenv(
+    model = _get_config_value("GEMINI_MODEL", "gemini-2.5-flash")
+    fallback_model = _get_config_value(
         "GEMINI_FALLBACK_MODEL",
-        "gemini-2.5-flash-lite",
+        DEFAULT_GEMINI_FALLBACK_MODEL,
     )
+    if fallback_model == RETIRED_GEMINI_FALLBACK_MODEL:
+        logger.warning(
+            "%s is retired; using %s instead.",
+            RETIRED_GEMINI_FALLBACK_MODEL,
+            DEFAULT_GEMINI_FALLBACK_MODEL,
+        )
+        fallback_model = DEFAULT_GEMINI_FALLBACK_MODEL
     models = list(dict.fromkeys((model, fallback_model)))
     for model_index, model_name in enumerate(models):
         for attempt in range(GEMINI_MAX_ATTEMPTS):
@@ -261,6 +285,14 @@ def _generate_with_gemini(prompt):
                     ),
                 )
             except APIError as error:
+                if error.code == 404 and model_index < len(models) - 1:
+                    logger.warning(
+                        "Google AI Studio could not find model %s; "
+                        "switching to fallback model %s.",
+                        model_name,
+                        models[model_index + 1],
+                    )
+                    break
                 if error.code not in GEMINI_RETRYABLE_ERROR_CODES:
                     raise
                 if attempt == GEMINI_MAX_ATTEMPTS - 1:

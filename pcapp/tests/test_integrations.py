@@ -3,10 +3,11 @@ import unittest
 from unittest.mock import call, patch
 from types import SimpleNamespace
 
-from google.genai.errors import ServerError
+from google.genai.errors import ClientError, ServerError
 
 from integrations import (
     _clean_task,
+    _get_config_value,
     build_project_task_prompt,
     generate_project_tasks,
     parse_github_pull_request,
@@ -180,6 +181,33 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         self.assertIn('"repositorio_url"', prompt)
         self.assertIn("no la pongas en modo_entrega", prompt)
 
+    def test_uses_groq_key_from_streamlit_secrets(self):
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "streamlit.secrets",
+                new={"GROQ_API_KEY": "groq-test-key"},
+            ),
+            patch("groq.Groq") as groq_client,
+        ):
+            client = groq_client.return_value
+            client.chat.completions.create.return_value.choices = [
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=_valid_generated_tasks_json()
+                    )
+                )
+            ]
+
+            tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        groq_client.assert_called_once_with(
+            api_key="groq-test-key",
+            timeout=30.0,
+            max_retries=1,
+        )
+
     def test_generates_with_groq_before_google_ai_studio(self):
         with (
             patch.dict(
@@ -332,9 +360,48 @@ class GeneratedTaskValidationTests(unittest.TestCase):
     @patch("google.genai.Client")
     @patch.dict(
         "os.environ",
-        {"GROQ_API_KEY": "", "GEMINI_API_KEY": "test-key"},
+        {
+            "GROQ_API_KEY": "",
+            "GEMINI_API_KEY": "test-key",
+            "GEMINI_MODEL": "retired-model",
+            "GEMINI_FALLBACK_MODEL": "gemini-3.5-flash-lite",
+        },
     )
-    def test_falls_back_to_lite_model_after_primary_model_stays_unavailable(
+    def test_uses_fallback_model_when_primary_model_is_not_found(
+        self,
+        client_class,
+    ):
+        client = client_class.return_value
+        client.models.generate_content.side_effect = [
+            ClientError(
+                404,
+                {"error": {"message": "model not found"}},
+                None,
+            ),
+            SimpleNamespace(text=_valid_generated_tasks_json()),
+        ]
+
+        tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        self.assertEqual(
+            [
+                call.kwargs["model"]
+                for call in client.models.generate_content.call_args_list
+            ],
+            ["retired-model", "gemini-3.5-flash-lite"],
+        )
+
+    @patch("google.genai.Client")
+    @patch.dict(
+        "os.environ",
+        {
+            "GROQ_API_KEY": "",
+            "GEMINI_API_KEY": "test-key",
+            "GEMINI_FALLBACK_MODEL": "gemini-2.5-flash-lite",
+        },
+    )
+    def test_migrates_retired_fallback_model_after_primary_stays_unavailable(
         self,
         client_class,
     ):
@@ -363,7 +430,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
                 "gemini-2.5-flash",
                 "gemini-2.5-flash",
                 "gemini-2.5-flash",
-                "gemini-2.5-flash-lite",
+                "gemini-3.5-flash-lite",
             ],
         )
         sleep.assert_has_calls([call(1), call(2)])

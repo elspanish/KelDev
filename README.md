@@ -7,15 +7,16 @@ merge de una Pull Request.
 ## Ejecutar localmente
 
 1. Instala dependencias con `pip install -r requirements.txt`.
-2. Copia `pcapp/.env.example` a `pcapp/.env` y configura URL/clave de Supabase y
-   la clave de Google AI Studio (`GEMINI_API_KEY`).
+2. Copia `pcapp/.env.example` a `pcapp/.env` y configura URL/clave de Supabase,
+   `GROQ_API_KEY` y, si quieres habilitar el proveedor de respaldo,
+   `GEMINI_API_KEY`.
 3. Ejecuta desde la raíz del repositorio:
 
    ```sh
    streamlit run pcapp/main.py
    ```
 
-La llamada a Gemini es opcional; sin su clave todavía se pueden crear y editar
+La generación con IA es opcional; sin claves todavía se pueden crear y editar
 las tareas manualmente.
 
 ## Preparar Supabase y GitHub
@@ -61,15 +62,16 @@ las tareas manualmente.
    Authorization callback URL.
    Registra la URL pública de Streamlit como URL de redirección permitida en
    Supabase y configura `APP_URL` con esa misma URL al desplegar la aplicación.
-6. Configura las variables `SUPABASE_URL`, `SUPABASE_KEY` y `GEMINI_API_KEY`
-   como secretos/variables del entorno donde se ejecuta Streamlit. `GEMINI_API_KEY`
-   se crea desde Google AI Studio. Opcionalmente configura `GEMINI_MODEL` y
-   `GEMINI_FALLBACK_MODEL`; si el primero sigue devolviendo errores temporales,
-   la aplicación prueba el segundo (por defecto `gemini-2.5-flash-lite`).
-   Para disponer de un proveedor alternativo cuando un servicio de IA no esté
-   disponible, configura también `GROQ_API_KEY` y, opcionalmente, `GROQ_MODEL`.
-   La aplicación intenta primero Groq y después Google AI Studio; los errores
-   transitorios de Google se reintentan automáticamente hasta dos veces.
+6. Configura las variables `SUPABASE_URL`, `SUPABASE_KEY` y `GROQ_API_KEY`
+   como secretos/variables del entorno donde se ejecuta Streamlit.
+   `GROQ_API_KEY` se crea desde Groq. Opcionalmente configura `GROQ_MODEL`.
+   La aplicación intenta primero Groq y, si falla, Google AI Studio mediante
+   `GEMINI_API_KEY`. Opcionalmente configura `GEMINI_MODEL` y
+   `GEMINI_FALLBACK_MODEL`; si el modelo primario no está disponible o sigue
+   devolviendo errores temporales, la aplicación prueba el de respaldo (por
+   defecto `gemini-3.5-flash-lite`). Los errores transitorios de Google se
+   reintentan automáticamente hasta dos veces. Los secretos configurados en
+   Streamlit y las variables de entorno son compatibles.
 
 El webhook verifica la firma HMAC de GitHub. En el flujo directo, la PR se
 consulta al registrarla y el webhook detecta los cierres posteriores. En el

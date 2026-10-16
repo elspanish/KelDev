@@ -469,7 +469,7 @@ def render_task_details(task, user_skills=None):
 
 
 # 1. Cargar variables de entorno y configuración
-load_dotenv("pcapp/.env")
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 st.set_page_config(page_title="Plataforma Dev", layout="wide")
 st.markdown(
     """
@@ -662,7 +662,7 @@ if st.session_state.user is None:
                 "Continuar con GitHub",
                 oauth_response.url,
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         except Exception:
             report_problem("Inicio de sesión con GitHub")
@@ -675,7 +675,7 @@ if st.session_state.user is None:
             email = st.text_input("Correo electrónico", key="login_email")
             password = st.text_input("Contraseña", type="password", key="login_pass")
 
-            if st.button("Entrar", type="primary", use_container_width=True):
+            if st.button("Entrar", type="primary", width="stretch"):
                 try:
                     res = supabase.auth.sign_in_with_password(
                         {"email": email, "password": password}
@@ -697,7 +697,7 @@ if st.session_state.user is None:
                 "Nombre de desarrollador", key="reg_nombre"
             )
 
-            if st.button("Crear cuenta", type="primary", use_container_width=True):
+            if st.button("Crear cuenta", type="primary", width="stretch"):
                 try:
                     res = supabase.auth.sign_up(
                         {
@@ -770,12 +770,12 @@ else:
                     if st.session_state.opcion_actual == destino
                     else "secondary"
                 ),
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state.opcion_actual = destino
                 st.rerun()
         st.divider()
-        if st.button("Cerrar sesión", use_container_width=True):
+        if st.button("Cerrar sesión", width="stretch"):
             try:
                 supabase.auth.sign_out()
             except Exception:
@@ -925,7 +925,7 @@ else:
                             )
                             guardar_nombre = st.form_submit_button(
                                 "Actualizar nombre",
-                                use_container_width=True,
+                                width="stretch",
                             )
                         if guardar_nombre:
                             if not nombre_nuevo.strip():
@@ -968,7 +968,7 @@ else:
                             data=perfil_pdf_bytes,
                             file_name="informe-profesional-plataforma-dev.pdf",
                             mime="application/pdf",
-                            use_container_width=True,
+                            width="stretch",
                         )
 
                 with st.expander("Editar habilidades"):
@@ -1100,7 +1100,7 @@ else:
                         f"{st.session_state.project_module_draft_version}"
                     ),
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     column_config={
                         "titulo": st.column_config.TextColumn("Módulo"),
@@ -1316,7 +1316,7 @@ else:
                 editor_drafts,
                 key=editor_key,
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "titulo": st.column_config.TextColumn("Título"),
@@ -1799,7 +1799,7 @@ else:
                 task_editor_rows,
                 key=f"module_task_editor_{module['id']}_{st.session_state[version_key]}",
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "titulo": st.column_config.TextColumn("Título"),
