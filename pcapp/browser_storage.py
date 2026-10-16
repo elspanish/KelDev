@@ -55,10 +55,17 @@ def build_browser_storage_payload(session_state, auth_session):
     return {"auth": auth, "widgets": widgets}
 
 
-def persistent_browser_storage(storage_key, payload):
+def persistent_browser_storage(
+    storage_key,
+    payload,
+    *,
+    component_key="persistent_browser_storage",
+    clear=False,
+):
     return _browser_storage(
         storage_key=storage_key,
         payload=payload,
+        clear=clear,
         default=None,
-        key="persistent_browser_storage",
+        key=component_key,
     )

@@ -6,6 +6,8 @@ import streamlit as st
 from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
 from supabase import create_client
+from supabase.lib.client_options import SyncClientOptions
+from auth_storage import StreamlitAuthStorage
 from browser_storage import (
     build_browser_storage_payload,
     persistent_browser_storage,
@@ -554,7 +556,14 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 
 def get_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    return create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY,
+        options=SyncClientOptions(
+            flow_type="pkce",
+            storage=StreamlitAuthStorage(),
+        ),
+    )
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.info(
@@ -563,9 +572,13 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     )
     st.stop()
 
-if "supabase_client" not in st.session_state:
+if (
+    "supabase_client" not in st.session_state
+    or st.session_state.get("_supabase_client_storage_version") != 1
+):
     try:
         st.session_state.supabase_client = get_supabase()
+        st.session_state["_supabase_client_storage_version"] = 1
     except Exception:
         report_problem("No se pudo inicializar Supabase")
         st.stop()
@@ -600,6 +613,7 @@ if (
 if (
     not st.session_state.get("_browser_storage_loaded")
     and isinstance(browser_storage_result, dict)
+    and browser_storage_result.get("loaded")
 ):
     stored_payload = browser_storage_result.get("value") or {}
     if not isinstance(stored_payload, dict):
@@ -634,17 +648,60 @@ if "user" not in st.session_state:
         report_problem("No se pudo recuperar la sesión de Supabase")
         st.session_state.user = None
 
+oauth_verifier_result = persistent_browser_storage(
+    "plataforma-dev-oauth-pkce",
+    None,
+    component_key="oauth_pkce_load",
+    clear=st.session_state.pop("_clear_oauth_pkce", False),
+)
 code = st.query_params.get("code")
-if code:
+if code and st.session_state.user is None:
     try:
-        session = supabase.auth.exchange_code_for_session(
-            {"auth_code": code}
-        )
-        st.session_state["user"] = session.user
+        active_session = supabase.auth.get_session()
+        if active_session is not None:
+            st.session_state["user"] = active_session.user
+        elif not (
+            isinstance(oauth_verifier_result, dict)
+            and oauth_verifier_result.get("loaded")
+        ):
+            st.info("Restaurando la sesión segura de GitHub...")
+            st.stop()
+        else:
+            verifier_payload = oauth_verifier_result.get("value") or {}
+            code_verifier = (
+                verifier_payload.get("code_verifier")
+                if isinstance(verifier_payload, dict)
+                else None
+            )
+            if not code_verifier:
+                st.session_state["_oauth_login_error"] = True
+                st.query_params.clear()
+                st.session_state["_clear_oauth_pkce"] = True
+                st.rerun()
+            session = supabase.auth.exchange_code_for_session({
+                "auth_code": code,
+                "code_verifier": code_verifier,
+            })
+            if session.user is None:
+                raise RuntimeError(
+                    "Supabase no devolvió un usuario para el código OAuth."
+                )
+            st.session_state["user"] = session.user
+        st.session_state.pop("_github_oauth_url", None)
+        st.session_state["_clear_oauth_pkce"] = True
         st.query_params.clear()
         st.rerun()
     except Exception:
         report_problem("No se pudo completar el inicio de sesión con GitHub")
+        st.session_state["_oauth_login_error"] = True
+        st.session_state["_clear_oauth_pkce"] = True
+        st.query_params.clear()
+        st.rerun()
+elif code:
+    st.session_state.pop("_github_oauth_url", None)
+    st.session_state["_clear_oauth_pkce"] = True
+    st.query_params.clear()
+    st.rerun()
 
 # ---------------------------------------------------------
 # PANTALLA 1: AUTENTICACIÓN (LOGIN / REGISTRO)
@@ -652,6 +709,12 @@ if code:
 if st.session_state.user is None:
     st.title("KelDev")
     st.caption("Colabora, crea proyectos y desarrolla tus habilidades.")
+
+    if st.session_state.pop("_oauth_login_error", False):
+        st.error(
+            "No se pudo completar el inicio de sesión de GitHub. "
+            "Vuelve a intentarlo desde este botón."
+        )
 
     with st.container(border=True):
         try:
@@ -661,18 +724,51 @@ if st.session_state.user is None:
                 )
             except StreamlitSecretNotFoundError:
                 redirect_url = "https://tu-app.streamlit.app"
-            oauth_response = supabase.auth.sign_in_with_oauth({
-                "provider": "github",
-                "options": {
-                    "redirect_to": redirect_url
-                },
-            })
-            st.link_button(
-                "Continuar con GitHub",
-                oauth_response.url,
-                type="primary",
-                width="stretch",
+            if not st.session_state.get("_github_oauth_url"):
+                oauth_response = supabase.auth.sign_in_with_oauth({
+                    "provider": "github",
+                    "options": {"redirect_to": redirect_url},
+                })
+                st.session_state["_github_oauth_url"] = oauth_response.url
+                _, code_verifier = StreamlitAuthStorage().get_code_verifier()
+                if not code_verifier:
+                    raise RuntimeError(
+                        "Supabase no generó el verificador PKCE."
+                    )
+                st.session_state["_github_oauth_verifier_payload"] = {
+                    "code_verifier": code_verifier
+                }
+            verifier_payload = st.session_state[
+                "_github_oauth_verifier_payload"
+            ]
+            verifier_save_result = persistent_browser_storage(
+                "plataforma-dev-oauth-pkce",
+                verifier_payload,
+                component_key="oauth_pkce_save",
             )
+            verifier_saved = (
+                isinstance(verifier_save_result, dict)
+                and verifier_save_result.get("saved")
+                and verifier_save_result.get("value") == verifier_payload
+            )
+            if verifier_saved:
+                st.link_button(
+                    "Continuar con GitHub",
+                    st.session_state["_github_oauth_url"],
+                    type="primary",
+                    width="stretch",
+                )
+            elif (
+                isinstance(verifier_save_result, dict)
+                and verifier_save_result.get("error")
+            ):
+                st.error(
+                    "No se pudo preparar el inicio de sesión seguro en este "
+                    "navegador. Habilita el almacenamiento local e inténtalo "
+                    "de nuevo."
+                )
+            else:
+                st.info("Preparando el inicio de sesión seguro...")
         except Exception:
             report_problem("Inicio de sesión con GitHub")
 
@@ -791,6 +887,8 @@ else:
                 report_problem("Cierre de sesión")
             else:
                 st.session_state.user = None
+                st.session_state.pop("_github_oauth_url", None)
+                st.session_state.pop("_github_oauth_verifier_payload", None)
                 st.session_state.pop("overview_user_id", None)
                 st.session_state.pop("user_overview", None)
                 st.rerun()

@@ -65,7 +65,9 @@ las tareas manualmente.
    Registra la URL pública de Streamlit como URL de redirección permitida en
    Supabase y configura el secreto `REDIRECT_URL` de Streamlit con esa misma
    URL al desplegar la aplicación. Si no se configura, se usa
-   `https://tu-app.streamlit.app`.
+   `https://tu-app.streamlit.app`. El navegador debe permitir almacenamiento
+   local para conservar temporalmente el verificador PKCE durante el retorno
+   de GitHub.
 6. Configura las variables `SUPABASE_URL`, `SUPABASE_KEY` y `GROQ_API_KEY`
    como secretos/variables del entorno donde se ejecuta Streamlit.
    `GROQ_API_KEY` se crea desde Groq. Opcionalmente configura `GROQ_MODEL`.

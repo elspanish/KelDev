@@ -40,23 +40,45 @@
             const stored = window.localStorage.getItem(storageKey);
             sendValue({
               storage_key: storageKey,
-              value: stored ? JSON.parse(stored) : { auth: null, widgets: {} }
+              value: stored ? JSON.parse(stored) : null,
+              loaded: true
             });
           } catch (error) {
             sendValue({
               storage_key: storageKey,
-              value: { auth: null, widgets: {} },
+              value: null,
+              loaded: true,
               error: String(error)
             });
           }
         }
 
-        if (args.payload !== null && args.payload !== undefined) {
+        if (args.clear) {
+          try {
+            window.localStorage.removeItem(storageKey);
+            sendValue({
+              storage_key: storageKey,
+              value: null,
+              cleared: true
+            });
+          } catch (error) {
+            sendValue({
+              storage_key: storageKey,
+              value: null,
+              error: String(error)
+            });
+          }
+        } else if (args.payload !== null && args.payload !== undefined) {
           try {
             window.localStorage.setItem(
               storageKey,
               JSON.stringify(args.payload)
             );
+            sendValue({
+              storage_key: storageKey,
+              value: args.payload,
+              saved: true
+            });
           } catch (error) {
             console.error("No se pudo guardar el estado en localStorage.", error);
             sendValue({
