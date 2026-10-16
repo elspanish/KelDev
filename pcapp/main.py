@@ -4,6 +4,7 @@ import sys
 
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.errors import StreamlitSecretNotFoundError
 from supabase import create_client
 from browser_storage import (
     build_browser_storage_payload,
@@ -633,12 +634,11 @@ if "user" not in st.session_state:
         report_problem("No se pudo recuperar la sesión de Supabase")
         st.session_state.user = None
 
-if st.session_state.user is None and st.query_params.get("code"):
+auth_code = st.query_params.get("code")
+if auth_code:
     try:
-        auth_response = supabase.auth.exchange_code_for_session(
-            {"auth_code": st.query_params["code"]}
-        )
-        st.session_state.user = auth_response.user
+        auth_response = supabase.auth.exchange_code_for_session(auth_code)
+        st.session_state["user"] = auth_response.user
         st.query_params.clear()
         st.rerun()
     except Exception:
@@ -653,10 +653,16 @@ if st.session_state.user is None:
 
     with st.container(border=True):
         try:
+            try:
+                redirect_url = st.secrets.get(
+                    "REDIRECT_URL", "http://localhost:3000"
+                )
+            except StreamlitSecretNotFoundError:
+                redirect_url = "http://localhost:3000"
             oauth_response = supabase.auth.sign_in_with_oauth({
                 "provider": "github",
                 "options": {
-                    "redirect_to": os.getenv("APP_URL") or st.context.url
+                    "redirect_to": redirect_url
                 },
             })
             st.link_button(
