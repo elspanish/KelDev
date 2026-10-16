@@ -64,6 +64,10 @@ las tareas manualmente.
 6. Configura las variables `SUPABASE_URL`, `SUPABASE_KEY` y `GEMINI_API_KEY`
    como secretos/variables del entorno donde se ejecuta Streamlit. `GEMINI_API_KEY`
    se crea desde Google AI Studio. Opcionalmente configura `GEMINI_MODEL`.
+   Para disponer de un proveedor alternativo cuando un servicio de IA no esté
+   disponible, configura también `GROQ_API_KEY` y, opcionalmente, `GROQ_MODEL`.
+   La aplicación intenta primero Groq y después Google AI Studio; los errores
+   transitorios de Google se reintentan automáticamente hasta dos veces.
 
 El webhook verifica la firma HMAC de GitHub. En el flujo directo, la PR se
 consulta al registrarla y el webhook detecta los cierres posteriores. En el

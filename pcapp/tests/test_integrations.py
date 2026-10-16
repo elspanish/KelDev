@@ -1,7 +1,9 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 from types import SimpleNamespace
+
+from google.genai.errors import ServerError
 
 from integrations import (
     _clean_task,
@@ -301,6 +303,31 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             call["config"].response_mime_type,
             "application/json",
         )
+
+    @patch("google.genai.Client")
+    @patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "", "GEMINI_API_KEY": "test-key"},
+    )
+    def test_retries_gemini_after_temporary_service_unavailable(
+        self,
+        client_class,
+    ):
+        client = client_class.return_value
+        client.models.generate_content.side_effect = [
+            ServerError(503, {"error": {"message": "temporarily unavailable"}}),
+            SimpleNamespace(text=_valid_generated_tasks_json()),
+        ]
+
+        with patch("integrations.time.sleep") as sleep:
+            tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        self.assertEqual(
+            client.models.generate_content.call_count,
+            2,
+        )
+        sleep.assert_has_calls([call(1)])
 
     @patch("google.genai.Client")
     @patch.dict(
