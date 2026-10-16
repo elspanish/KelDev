@@ -334,6 +334,45 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         "os.environ",
         {"GROQ_API_KEY": "", "GEMINI_API_KEY": "test-key"},
     )
+    def test_falls_back_to_lite_model_after_primary_model_stays_unavailable(
+        self,
+        client_class,
+    ):
+        client = client_class.return_value
+        unavailable = ServerError(
+            503,
+            {"error": {"message": "temporarily unavailable"}},
+        )
+        client.models.generate_content.side_effect = [
+            unavailable,
+            unavailable,
+            unavailable,
+            SimpleNamespace(text=_valid_generated_tasks_json()),
+        ]
+
+        with patch("integrations.time.sleep") as sleep:
+            tasks = generate_project_tasks("App", "Una aplicación Streamlit.")
+
+        self.assertEqual(tasks[0]["titulo"], "Crear formulario")
+        self.assertEqual(
+            [
+                call.kwargs["model"]
+                for call in client.models.generate_content.call_args_list
+            ],
+            [
+                "gemini-2.5-flash",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite",
+            ],
+        )
+        sleep.assert_has_calls([call(1), call(2)])
+
+    @patch("google.genai.Client")
+    @patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "", "GEMINI_API_KEY": "test-key"},
+    )
     def test_routes_repository_in_project_description_to_destination_field(
         self,
         client_class,

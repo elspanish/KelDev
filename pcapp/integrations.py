@@ -244,35 +244,59 @@ def _generate_with_gemini(prompt):
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
-    for attempt in range(GEMINI_MAX_ATTEMPTS):
-        try:
-            response = client.models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                ),
-            )
-            break
-        except APIError as error:
-            if (
-                error.code not in GEMINI_RETRYABLE_ERROR_CODES
-                or attempt == GEMINI_MAX_ATTEMPTS - 1
-            ):
-                raise
-            delay = 2**attempt
-            logger.warning(
-                "Google AI Studio returned transient HTTP %s; "
-                "retrying in %s seconds (attempt %s/%s).",
-                error.code,
-                delay,
-                attempt + 2,
-                GEMINI_MAX_ATTEMPTS,
-            )
-            time.sleep(delay)
-    if not response.text:
-        raise RuntimeError("Google AI Studio devolvió una respuesta vacía.")
-    return response.text
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    fallback_model = os.getenv(
+        "GEMINI_FALLBACK_MODEL",
+        "gemini-2.5-flash-lite",
+    )
+    models = list(dict.fromkeys((model, fallback_model)))
+    for model_index, model_name in enumerate(models):
+        for attempt in range(GEMINI_MAX_ATTEMPTS):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    ),
+                )
+            except APIError as error:
+                if error.code not in GEMINI_RETRYABLE_ERROR_CODES:
+                    raise
+                if attempt == GEMINI_MAX_ATTEMPTS - 1:
+                    if model_index == len(models) - 1:
+                        raise RuntimeError(
+                            "Google AI Studio no respondió tras agotar los "
+                            f"intentos de los modelos {', '.join(models)}: "
+                            f"{error}"
+                        ) from error
+                    logger.warning(
+                        "Google AI Studio kept returning transient HTTP %s "
+                        "for %s; switching to fallback model %s.",
+                        error.code,
+                        model_name,
+                        models[model_index + 1],
+                    )
+                    break
+                delay = 2**attempt
+                logger.warning(
+                    "Google AI Studio returned transient HTTP %s for %s; "
+                    "retrying in %s seconds (attempt %s/%s).",
+                    error.code,
+                    model_name,
+                    delay,
+                    attempt + 2,
+                    GEMINI_MAX_ATTEMPTS,
+                )
+                time.sleep(delay)
+                continue
+
+            if not response.text:
+                raise RuntimeError(
+                    f"Google AI Studio devolvió una respuesta vacía "
+                    f"con el modelo {model_name}."
+                )
+            return response.text
 
 
 def _clean_generated_tasks(response_text, description):

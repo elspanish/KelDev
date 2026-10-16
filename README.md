@@ -63,7 +63,9 @@ las tareas manualmente.
    Supabase y configura `APP_URL` con esa misma URL al desplegar la aplicación.
 6. Configura las variables `SUPABASE_URL`, `SUPABASE_KEY` y `GEMINI_API_KEY`
    como secretos/variables del entorno donde se ejecuta Streamlit. `GEMINI_API_KEY`
-   se crea desde Google AI Studio. Opcionalmente configura `GEMINI_MODEL`.
+   se crea desde Google AI Studio. Opcionalmente configura `GEMINI_MODEL` y
+   `GEMINI_FALLBACK_MODEL`; si el primero sigue devolviendo errores temporales,
+   la aplicación prueba el segundo (por defecto `gemini-2.5-flash-lite`).
    Para disponer de un proveedor alternativo cuando un servicio de IA no esté
    disponible, configura también `GROQ_API_KEY` y, opcionalmente, `GROQ_MODEL`.
    La aplicación intenta primero Groq y después Google AI Studio; los errores
