@@ -719,52 +719,52 @@ if st.session_state.user is None:
 
     with st.container(border=True):
 
-    tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
+        tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
 
-    with tab_login:
-        with st.container(border=True):
-            st.subheader("Bienvenido de nuevo")
-            email = st.text_input("Correo electrónico", key="login_email")
-            password = st.text_input("Contraseña", type="password", key="login_pass")
+        with tab_login:
+            with st.container(border=True):
+                st.subheader("Bienvenido de nuevo")
+                email = st.text_input("Correo electrónico", key="login_email")
+                password = st.text_input("Contraseña", type="password", key="login_pass")
 
-            if st.button("Entrar", type="primary", width="stretch"):
-                try:
-                    res = supabase.auth.sign_in_with_password(
-                        {"email": email, "password": password}
-                    )
-                    st.session_state.user = res.user
-                    st.success("Sesión iniciada.")
-                    st.rerun()
-                except Exception:
-                    report_problem("Inicio de sesión")
+                if st.button("Entrar", type="primary", width="stretch"):
+                    try:
+                        res = supabase.auth.sign_in_with_password(
+                            {"email": email, "password": password}
+                        )
+                        st.session_state.user = res.user
+                        st.success("Sesión iniciada.")
+                        st.rerun()
+                    except Exception:
+                        report_problem("Inicio de sesión")
 
-    with tab_registro:
-        with st.container(border=True):
-            st.subheader("Únete a la comunidad")
-            reg_email = st.text_input("Correo electrónico", key="reg_email")
-            reg_password = st.text_input(
-                "Contraseña", type="password", key="reg_pass"
-            )
-            reg_nombre = st.text_input(
-                "Nombre de desarrollador", key="reg_nombre"
-            )
+        with tab_registro:
+            with st.container(border=True):
+                st.subheader("Únete a la comunidad")
+                reg_email = st.text_input("Correo electrónico", key="reg_email")
+                reg_password = st.text_input(
+                    "Contraseña", type="password", key="reg_pass"
+                )
+                reg_nombre = st.text_input(
+                    "Nombre de desarrollador", key="reg_nombre"
+                )
 
-            if st.button("Crear cuenta", type="primary", width="stretch"):
-                try:
-                    res = supabase.auth.sign_up(
-                        {
-                            "email": reg_email,
-                            "password": reg_password,
-                            "options": {"data": {"nombre": reg_nombre.strip()}},
-                        }
-                    )
-                    st.success(
-                        "Registro exitoso. Revisa tu bandeja para confirmar "
-                        "tu correo antes de entrar. Tu perfil se crea "
-                        "automáticamente."
-                    )
-                except Exception:
-                    report_problem("Registro de usuario")
+                if st.button("Crear cuenta", type="primary", width="stretch"):
+                    try:
+                        res = supabase.auth.sign_up(
+                            {
+                                "email": reg_email,
+                                "password": reg_password,
+                                "options": {"data": {"nombre": reg_nombre.strip()}},
+                            }
+                        )
+                        st.success(
+                            "Registro exitoso. Revisa tu bandeja para confirmar "
+                            "tu correo antes de entrar. Tu perfil se crea "
+                            "automáticamente."
+                        )
+                    except Exception:
+                        report_problem("Registro de usuario")
 
 # ---------------------------------------------------------
 # PANTALLA 2: DASHBOARD PRINCIPAL
