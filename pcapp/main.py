@@ -718,60 +718,6 @@ if st.session_state.user is None:
         )
 
     with st.container(border=True):
-        try:
-            try:
-                redirect_url = st.secrets.get(
-                    "REDIRECT_URL", "https://tu-app.streamlit.app"
-                )
-            except StreamlitSecretNotFoundError:
-                redirect_url = "https://tu-app.streamlit.app"
-            if not st.session_state.get("_github_oauth_url"):
-                oauth_response = supabase.auth.sign_in_with_oauth({
-                    "provider": "github",
-                    "options": {"redirect_to": redirect_url},
-                })
-                st.session_state["_github_oauth_url"] = oauth_response.url
-                _, code_verifier = StreamlitAuthStorage().get_code_verifier()
-                if not code_verifier:
-                    raise RuntimeError(
-                        "Supabase no generó el verificador PKCE."
-                    )
-                st.session_state["_github_oauth_verifier_payload"] = {
-                    "code_verifier": code_verifier
-                }
-            verifier_payload = st.session_state[
-                "_github_oauth_verifier_payload"
-            ]
-            verifier_save_result = persistent_browser_storage(
-                "plataforma-dev-oauth-pkce",
-                verifier_payload,
-                component_key="storage_save_verifier",
-            )
-            verifier_saved = (
-                isinstance(verifier_save_result, dict)
-                and verifier_save_result.get("saved")
-                and verifier_save_result.get("value") == verifier_payload
-            )
-           # if verifier_saved:
-            #    st.link_button(
-             #       "Continuar con GitHub",
-              #      st.session_state["_github_oauth_url"],
-               #     type="primary",
-                #    width="stretch",
-                #)
-           # elif (
-             #   isinstance(verifier_save_result, dict)
-             #   and verifier_save_result.get("error")
-            #):
-            #    st.error(
-           #         "No se pudo preparar el inicio de sesión seguro en este "
-          #          "navegador. Habilita el almacenamiento local e inténtalo "
-          #          "de nuevo."
-         #       )
-        #    else:
-       #         st.info("Preparando el inicio de sesión seguro...")
-      #  except Exception:
-     #       report_problem("Inicio de sesión con GitHub")
 
     tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
 
