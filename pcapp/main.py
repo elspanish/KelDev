@@ -601,6 +601,7 @@ else:
 browser_storage_result = persistent_browser_storage(
     "plataforma-dev-browser-state",
     storage_payload,
+    component_key="storage_result_main"
 )
 if (
     isinstance(browser_storage_result, dict)
@@ -651,6 +652,7 @@ if "user" not in st.session_state:
 oauth_verifier_result = persistent_browser_storage(
     "plataforma-dev-oauth-pkce",
     None,
+    component_key="auth_storage_unico_123"
     clear=st.session_state.pop("_clear_oauth_pkce", False),
 )
 code = st.query_params.get("code")
@@ -743,7 +745,7 @@ if st.session_state.user is None:
             verifier_save_result = persistent_browser_storage(
                 "plataforma-dev-oauth-pkce",
                 verifier_payload,
-                component_key="oauth_pkce_save",
+                component_key="storage_save_verifier",
             )
             verifier_saved = (
                 isinstance(verifier_save_result, dict)
