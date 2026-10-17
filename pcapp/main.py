@@ -759,19 +759,19 @@ if st.session_state.user is None:
                #     type="primary",
                 #    width="stretch",
                 #)
-            elif (
-                isinstance(verifier_save_result, dict)
-                and verifier_save_result.get("error")
-            ):
-                st.error(
-                    "No se pudo preparar el inicio de sesión seguro en este "
-                    "navegador. Habilita el almacenamiento local e inténtalo "
-                    "de nuevo."
-                )
-            else:
-                st.info("Preparando el inicio de sesión seguro...")
-        except Exception:
-            report_problem("Inicio de sesión con GitHub")
+           # elif (
+             #   isinstance(verifier_save_result, dict)
+             #   and verifier_save_result.get("error")
+            #):
+            #    st.error(
+           #         "No se pudo preparar el inicio de sesión seguro en este "
+          #          "navegador. Habilita el almacenamiento local e inténtalo "
+          #          "de nuevo."
+         #       )
+        #    else:
+       #         st.info("Preparando el inicio de sesión seguro...")
+      #  except Exception:
+     #       report_problem("Inicio de sesión con GitHub")
 
     tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
 
