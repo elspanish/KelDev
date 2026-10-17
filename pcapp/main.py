@@ -620,7 +620,7 @@ if (
     if not isinstance(stored_payload, dict):
         stored_payload = {}
     stored_widgets = stored_payload.get("widgets") or {}
-    if isinstance(stored_widgets, dict):
+   # if isinstance(stored_widgets, dict):
     #    for key, value in stored_widgets.items():
      #       if isinstance(key, str) and not key.startswith("_"):
       #          st.session_state[key] = value
