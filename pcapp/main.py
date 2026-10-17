@@ -621,9 +621,9 @@ if (
         stored_payload = {}
     stored_widgets = stored_payload.get("widgets") or {}
     if isinstance(stored_widgets, dict):
-        for key, value in stored_widgets.items():
-            if isinstance(key, str) and not key.startswith("_"):
-                st.session_state[key] = value
+    #    for key, value in stored_widgets.items():
+     #       if isinstance(key, str) and not key.startswith("_"):
+      #          st.session_state[key] = value
     st.session_state["_browser_storage_loaded"] = True
     stored_auth = stored_payload.get("auth")
     if (
