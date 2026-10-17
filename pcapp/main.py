@@ -653,7 +653,6 @@ oauth_verifier_result = persistent_browser_storage(
     None,
     clear=st.session_state.pop("_clear_oauth_pkce", False),
 )
-)
 code = st.query_params.get("code")
 if code and st.session_state.user is None:
     try:
