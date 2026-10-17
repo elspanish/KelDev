@@ -59,7 +59,7 @@ def persistent_browser_storage(
     storage_key,
     payload,
     *,
-    component_key="persistent_browser_storage",
+    component_key="persistent_browser_storage_unique",
     clear=False,
 ):
     return _browser_storage(
