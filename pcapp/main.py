@@ -651,23 +651,7 @@ if st.session_state.user is None:
     st.title("KelDev")
     st.caption("Colabora, crea proyectos y desarrolla tus habilidades.")
 
-    with st.container(border=True):
-        try:
-            oauth_response = supabase.auth.sign_in_with_oauth({
-                "provider": "github",
-                "options": {
-                    "redirect_to": os.getenv("APP_URL") or st.context.url
-                },
-            })
-            st.link_button(
-                "Continuar con GitHub",
-                oauth_response.url,
-                type="primary",
-                width="stretch",
-            )
-        except Exception:
-            report_problem("Inicio de sesión con GitHub")
-
+   
     tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
 
     with tab_login:
