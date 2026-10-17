@@ -652,7 +652,7 @@ if "user" not in st.session_state:
 oauth_verifier_result = persistent_browser_storage(
     "plataforma-dev-oauth-pkce",
     None,
-    component_key="auth_storage_unico_123"
+    component_key="auth_storage_unico_123",
     clear=st.session_state.pop("_clear_oauth_pkce", False),
 )
 code = st.query_params.get("code")
