@@ -752,13 +752,13 @@ if st.session_state.user is None:
                 and verifier_save_result.get("saved")
                 and verifier_save_result.get("value") == verifier_payload
             )
-            if verifier_saved:
-                st.link_button(
-                    "Continuar con GitHub",
-                    st.session_state["_github_oauth_url"],
-                    type="primary",
-                    width="stretch",
-                )
+           # if verifier_saved:
+            #    st.link_button(
+             #       "Continuar con GitHub",
+              #      st.session_state["_github_oauth_url"],
+               #     type="primary",
+                #    width="stretch",
+                #)
             elif (
                 isinstance(verifier_save_result, dict)
                 and verifier_save_result.get("error")
