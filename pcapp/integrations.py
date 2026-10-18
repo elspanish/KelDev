@@ -26,7 +26,14 @@ TASK_FIELDS = (
     "duracion_estimada_horas",
     "dificultad",
 )
-TASK_DIFFICULTIES = {"fácil", "medio", "difícil"}
+TASK_DIFFICULTIES = {
+    "easy": "Fácil",
+    "medium": "Medio",
+    "hard": "Difícil",
+    "fácil": "Fácil",
+    "medio": "Medio",
+    "difícil": "Difícil",
+}
 
 
 def parse_github_pull_request(url):
@@ -40,13 +47,13 @@ def parse_github_pull_request(url):
         or not re.fullmatch(r"\d+", parts[3])
     ):
         raise ValueError(
-            "Introduce un enlace de Pull Request de GitHub "
-            "(https://github.com/propietario/repositorio/pull/123)."
+            "Enter a GitHub pull request URL "
+            "(https://github.com/owner/repository/pull/123)."
         )
 
     owner, repository = parts[0], parts[1]
     if owner in {".", ".."} or repository in {".", ".."}:
-        raise ValueError("El enlace de GitHub no es válido.")
+        raise ValueError("The GitHub URL is invalid.")
 
     return owner, repository.removesuffix(".git"), int(parts[3])
 
@@ -62,7 +69,7 @@ def validate_github_code_url(url):
         or parts[1] in {".", ".."}
     ):
         raise ValueError(
-            "Introduce un enlace HTTPS válido a un repositorio o archivo de GitHub."
+            "Enter a valid HTTPS link to a GitHub repository or file."
         )
     return url.strip()
 
@@ -84,7 +91,7 @@ def _clean_task(task):
                 value = value.split(",")
             if not isinstance(value, list):
                 raise ValueError(
-                    "Las habilidades requeridas deben ser una lista."
+                    "Required skills must be provided as a list."
                 )
             cleaned[field] = [
                 str(skill).strip()
@@ -94,7 +101,7 @@ def _clean_task(task):
         elif field == "duracion_estimada_horas":
             if isinstance(value, bool):
                 raise ValueError(
-                    "La duración estimada debe ser un número entero de horas."
+                    "The estimated duration must be a whole number of hours."
                 )
             if isinstance(value, int):
                 cleaned[field] = value
@@ -104,7 +111,7 @@ def _clean_task(task):
                 cleaned[field] = int(value)
             else:
                 raise ValueError(
-                    "La duración estimada debe ser un número entero de horas."
+                    "The estimated duration must be a whole number of hours."
                 )
         else:
             cleaned[field] = str(value or "").strip()
@@ -118,76 +125,75 @@ def _clean_task(task):
     ]
     if missing:
         raise ValueError(
-            "El modelo dejó campos obligatorios vacíos: "
+            "The model left required fields empty: "
             + ", ".join(missing)
         )
     if not cleaned["habilidades_requeridas"]:
         raise ValueError(
-            "El modelo debe asignar al menos una habilidad requerida por tarea."
+            "The model must assign at least one required skill to every task."
         )
-    if cleaned["dificultad"].casefold() not in TASK_DIFFICULTIES:
-        raise ValueError(
-            "La dificultad debe ser Fácil, Medio o Difícil."
-        )
-    cleaned["dificultad"] = cleaned["dificultad"].title()
+    difficulty = TASK_DIFFICULTIES.get(cleaned["dificultad"].casefold())
+    if difficulty is None:
+        raise ValueError("Difficulty must be Easy, Medium, or Hard.")
+    cleaned["dificultad"] = difficulty
     if not 1 <= cleaned["duracion_estimada_horas"] <= 8:
         raise ValueError(
-            "La duración estimada debe ser de 1 a 8 horas para una persona."
+            "The estimated duration must be 1 to 8 hours for one contributor."
         )
     return cleaned
 
 
 def build_project_task_prompt(title, description):
     return f"""
-Analiza el título y la descripción del proyecto y divídelo en tareas de
-desarrollo de software independientes, concretas y verificables. Cada tarea
-debe poder completarla una sola persona con las habilidades requeridas.
+Analyze the project title and description and break the work into independent,
+concrete, verifiable software development tasks. Each task must be achievable
+by one contributor with the listed required skills.
 
-Mantén cada tarea en un tamaño asequible: estima esfuerzo individual en horas,
-limita cada tarea a un máximo de 8 horas de trabajo y divídela en tareas más
-pequeñas si supera ese límite. No confundas horas de trabajo con días
-calendario. Asigna una dificultad realista: Fácil, Medio o Difícil; evita que una
-tarea sea amplia o dependa de varias personas. Ordena las tareas en el orden
-lógico de implementación y evita duplicidades.
+Keep every task small and actionable. Estimate individual effort in working
+hours, limit each task to at most 8 hours, and split larger tasks into smaller
+ones. Do not confuse working hours with calendar days. Assign a realistic
+difficulty of Easy, Medium, or Hard. Order tasks by implementation dependency
+and avoid duplicates. Write every title and user-facing description in natural,
+professional technical English.
 
-Devuelve exclusivamente JSON válido con esta estructura:
+Return only valid JSON with this structure:
 {{
   "tasks": [
     {{
-      "titulo": "Título breve y concreto",
+      "titulo": "A short, action-oriented title",
       "habilidades_requeridas": ["Python"],
-      "instrucciones": "Pasos concretos y acotados para implementar la tarea",
-      "objetivo": "Resultado verificable esperado",
-      "restricciones": "Límites técnicos o condiciones que deben respetarse",
-      "entregables": "Archivos, cambios o evidencias que se deben entregar",
-      "recursos": "Documentación, herramientas o dependencias útiles",
-      "criterios_aceptacion": "Condiciones observables para aceptar el trabajo",
-      "modo_entrega": "Pull Request a GitHub; indicar qué debe incluir, sin URL",
-      "repositorio_url": "URL del repositorio destino de GitHub",
+      "instrucciones": "Numbered, specific implementation steps and file paths",
+      "objetivo": "The verifiable outcome",
+      "restricciones": "Technical constraints that must be respected",
+      "entregables": "Files, changes, or evidence to submit",
+      "recursos": "Relevant documentation, tools, or dependencies",
+      "criterios_aceptacion": "Observable acceptance criteria",
+      "modo_entrega": "Direct GitHub pull request and required evidence; no URL",
+      "repositorio_url": "Destination GitHub repository URL",
       "duracion_estimada_horas": 4,
-      "dificultad": "Medio"
+      "dificultad": "Medium"
     }}
   ]
 }}
 
-Genera al menos una tarea y completa todos los campos de cada una. Las
-habilidades deben ser una lista no vacía. La duración estimada debe ser un
-número entero de horas de trabajo para una persona, entre 1 y 8. Usa español.
-No inventes nombres de repositorios, URLs ni información que no aparezca en el
-proyecto. Si la descripción incluye una URL de GitHub, copia la URL base del
-repositorio (https://github.com/propietario/repositorio) en repositorio_url
-para todas las tareas y no la pongas en modo_entrega. Usa modo_entrega solo
-para explicar qué cambios, pruebas y evidencias debe incluir la Pull Request.
-Si la descripción no incluye un repositorio, deja repositorio_url vacío.
+Generate at least one task and populate every field. Required skills must be a
+non-empty array of relevant names from the existing shared skill catalog. The
+estimated duration must be a whole number of working hours from 1 to 8. Use
+English for all generated text. Do not invent repository names, URLs, or project
+facts. Use English for all generated text. If the description includes a GitHub
+URL, copy its base repository URL (https://github.com/owner/repository) into
+repositorio_url for every task and do not put that URL in modo_entrega. Use
+modo_entrega only to describe the
+changes, tests, and evidence to include in the pull request. If no repository
+URL is provided, leave repositorio_url empty.
 
-En KelDev, cada entrega se envía como una Pull Request directa del colaborador
-al repositorio destino de la tarea. No diseñes pasos de revisión entre pares,
-aprobación final del creador ni una segunda Pull Request creada por el creador.
-No incluyas en el JSON campos de flujo de revisión ni plazos de revisión; usa
-únicamente la estructura indicada arriba.
+KelDev uses a direct pull request from the contributor to the task destination
+repository. Do not design peer-review steps, creator approval, or a second pull
+request opened by the creator. Do not add review workflow or review deadline
+fields to the JSON; use only the structure shown above.
 
-Título del proyecto: {title}
-Descripción del proyecto: {description}
+Project title: {title}
+Project description: {description}
 """.strip()
 
 
@@ -209,7 +215,7 @@ def generate_project_tasks(title, description):
         return _clean_generated_tasks(response_text, description)
     except Exception as gemini_error:
         raise RuntimeError(
-            "No se pudieron generar las tareas con ninguno de los proveedores. "
+            "Task generation failed with both providers. "
             f"Groq: {groq_error}; Google AI Studio: {gemini_error}"
         ) from gemini_error
 
@@ -232,9 +238,7 @@ def _get_config_value(name, default=None):
 def _generate_with_groq(prompt):
     api_key = _get_config_value("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "Falta configurar GROQ_API_KEY para usar Groq."
-        )
+        raise RuntimeError("GROQ_API_KEY is required to use Groq.")
 
     from groq import Groq
 
@@ -248,10 +252,10 @@ def _generate_with_groq(prompt):
         response_text = response.choices[0].message.content
     except (AttributeError, IndexError, TypeError) as error:
         raise RuntimeError(
-            "Groq devolvió una respuesta sin contenido."
+            "Groq returned a response without content."
         ) from error
     if not isinstance(response_text, str) or not response_text.strip():
-        raise RuntimeError("Groq devolvió una respuesta vacía.")
+        raise RuntimeError("Groq returned an empty response.")
     return response_text
 
 
@@ -259,7 +263,7 @@ def _generate_with_gemini(prompt):
     api_key = _get_config_value("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "Falta configurar GEMINI_API_KEY para Google AI Studio."
+            "GEMINI_API_KEY is required to use Google AI Studio."
         )
 
     from google import genai
@@ -304,8 +308,8 @@ def _generate_with_gemini(prompt):
                 if attempt == GEMINI_MAX_ATTEMPTS - 1:
                     if model_index == len(models) - 1:
                         raise RuntimeError(
-                            "Google AI Studio no respondió tras agotar los "
-                            f"intentos de los modelos {', '.join(models)}: "
+                            "Google AI Studio did not respond after all "
+                            f"attempts for models {', '.join(models)}: "
                             f"{error}"
                         ) from error
                     logger.warning(
@@ -331,8 +335,8 @@ def _generate_with_gemini(prompt):
 
             if not response.text:
                 raise RuntimeError(
-                    f"Google AI Studio devolvió una respuesta vacía "
-                    f"con el modelo {model_name}."
+                    f"Google AI Studio returned an empty response "
+                    f"for model {model_name}."
                 )
             return response.text
 
@@ -341,11 +345,11 @@ def _clean_generated_tasks(response_text, description):
     try:
         result = json.loads(response_text)
     except json.JSONDecodeError as error:
-        raise ValueError("El modelo no devolvió un JSON válido.") from error
+        raise ValueError("The model did not return valid JSON.") from error
 
     tasks = result.get("tasks") if isinstance(result, dict) else None
     if not isinstance(tasks, list) or not tasks:
-        raise ValueError("El modelo no devolvió una lista de tareas.")
+        raise ValueError("The model did not return a task list.")
     cleaned_tasks = [_clean_task(task) for task in tasks]
     repository_url = _github_repository_from_description(description)
     if repository_url:

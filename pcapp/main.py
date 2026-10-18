@@ -18,10 +18,44 @@ from integrations import (
 from profile_export import build_profile_pdf
 from skills import prepare_skill_options
 
-TASK_DIFFICULTIES = ("Fácil", "Medio", "Difícil")
-DIFFICULTY_REWARDS = {"Fácil": 50, "Medio": 80, "Difícil": 140}
+TASK_DIFFICULTIES = ("Easy", "Medium", "Hard")
+DIFFICULTY_TO_DATABASE = {
+    "Easy": "Fácil",
+    "Medium": "Medio",
+    "Hard": "Difícil",
+}
+DIFFICULTY_FROM_DATABASE = {
+    value: label for label, value in DIFFICULTY_TO_DATABASE.items()
+}
+DIFFICULTY_REWARDS = {"Easy": 50, "Medium": 80, "Hard": 140}
+TASK_STATUS_LABELS = {
+    "pendiente": "Available",
+    "en_progreso": "In progress",
+    "en_revision": "In review",
+    "completada": "Completed",
+    "completado": "Completed",
+    "pendiente_revision": "Pending review",
+    "cambios_solicitados": "Changes requested",
+    "aceptada": "Accepted",
+    "rechazada": "Rejected",
+    "completed": "Completed",
+    "changes_requested": "Changes requested",
+    "rejected": "Rejected",
+}
 MODULE_WORKFLOWS_UI_ENABLED = False
 logger = logging.getLogger(__name__)
+
+
+def task_status_label(status):
+    if not status:
+        return "No status"
+    return TASK_STATUS_LABELS.get(str(status), str(status))
+
+
+def delivery_method_label(delivery_method):
+    if delivery_method == "Pull Request de GitHub":
+        return "Direct GitHub pull request"
+    return delivery_method
 
 
 def report_problem(context, error=None):
@@ -32,16 +66,16 @@ def report_problem(context, error=None):
     else:
         logger.warning("A platform operation could not be completed: %s", context)
     st.info(
-        "No se pudo completar la operación. Revisa los datos e inténtalo "
-        "de nuevo; si persiste, contacta con soporte."
+        "We could not complete this action. Check your details and try again. "
+        "If the problem continues, contact support."
     )
     if error is not None:
-        st.error(f"Detalle del error: {error}")
+        st.error(f"Error details: {error}")
 
 
 def render_module_task_proposals(user_id):
     st.divider()
-    st.subheader("Propuestas de tareas para módulos")
+    st.subheader("Module task proposals")
     try:
         proposals = (
             supabase.table("module_task_proposals")
@@ -75,45 +109,47 @@ def render_module_task_proposals(user_id):
                     (proposal, module, project_response.data[0])
                 )
         if not owner_proposals:
-            st.info("No tienes propuestas de módulos pendientes.")
+            st.info("You have no pending module proposals.")
         for proposal, module, project in owner_proposals:
             with st.container(border=True):
                 st.markdown(f"### {module['titulo']}")
                 st.caption(
-                    f"{project['titulo']} · propuesta "
-                    f"{proposal['id']} · autor {proposal['proposer_id']}"
+                    f"{project['titulo']} · proposal "
+                    f"{proposal['id']} · submitted by {proposal['proposer_id']}"
                 )
                 for task_index, proposed_task in enumerate(
                     proposal["tasks"], start=1
                 ):
                     with st.expander(
-                        f"{task_index}. {proposed_task.get('titulo') or 'Sin título'}"
+                        f"{task_index}. {proposed_task.get('titulo') or 'Untitled'}"
                     ):
                         for field, label in (
-                            ("habilidades_requeridas", "Habilidades"),
-                            ("instrucciones", "Instrucciones"),
-                            ("objetivo", "Objetivo"),
-                            ("restricciones", "Restricciones"),
-                            ("entregables", "Entregables"),
-                            ("recursos", "Recursos"),
-                            ("criterios_aceptacion", "Criterios de aceptación"),
-                            ("modo_entrega", "Modo de entrega"),
-                            ("repositorio_url", "Repositorio"),
-                            ("duracion_estimada_horas", "Estimación (horas)"),
-                            ("dificultad", "Dificultad"),
+                            ("habilidades_requeridas", "Required skills"),
+                            ("instrucciones", "Instructions"),
+                            ("objetivo", "Goal"),
+                            ("restricciones", "Constraints"),
+                            ("entregables", "Deliverables"),
+                            ("recursos", "Resources"),
+                            ("criterios_aceptacion", "Acceptance criteria"),
+                            ("modo_entrega", "Delivery method"),
+                            ("repositorio_url", "Repository"),
+                            ("duracion_estimada_horas", "Estimate (hours)"),
+                            ("dificultad", "Difficulty"),
                         ):
                             value = proposed_task.get(field)
                             if isinstance(value, list):
                                 value = ", ".join(map(str, value))
+                            elif field == "dificultad":
+                                value = DIFFICULTY_FROM_DATABASE.get(value, value)
                             st.write(f"**{label}:** {value or '—'}")
                 proposal_feedback = st.text_area(
-                    "Cambios solicitados (si rechazas)",
+                    "Requested changes (if returning the proposal)",
                     key=f"module_proposal_feedback_{proposal['id']}",
                 )
                 accept_col, return_col = st.columns(2)
                 with accept_col:
                     if st.button(
-                        "Aprobar y publicar tareas",
+                        "Approve and publish tasks",
                         type="primary",
                         key=f"accept_module_proposal_{proposal['id']}",
                     ):
@@ -126,16 +162,14 @@ def render_module_task_proposals(user_id):
                                     "p_feedback": "",
                                 },
                             ).execute()
-                            st.success(
-                                "Tareas creadas y añadidas al proyecto."
-                            )
+                            st.success("Tasks created and added to the project.")
                             invalidate_user_overview()
                             st.rerun()
                         except Exception:
-                            report_problem("Aprobación de propuesta")
+                            report_problem("Approving a proposal")
                 with return_col:
                     if st.button(
-                        "Solicitar cambios",
+                        "Request changes",
                         key=f"reject_module_proposal_{proposal['id']}",
                     ):
                         try:
@@ -147,15 +181,13 @@ def render_module_task_proposals(user_id):
                                     "p_feedback": proposal_feedback.strip(),
                                 },
                             ).execute()
-                            st.success(
-                                "La propuesta volvió a su autor para cambios."
-                            )
+                            st.success("The proposal was returned to its author.")
                             invalidate_user_overview()
                             st.rerun()
                         except Exception:
-                            report_problem("Solicitud de cambios de propuesta")
+                            report_problem("Requesting proposal changes")
     except Exception:
-        report_problem("Carga de propuestas de módulos")
+        report_problem("Loading module proposals")
 
 
 def invalidate_user_overview():
@@ -195,7 +227,7 @@ def add_skills_to_catalog(skills):
         ).execute()
         if not response.data:
             raise RuntimeError(
-                f"No se pudo añadir la habilidad «{name}» al catálogo."
+                f"Could not add skill “{name}” to the catalog."
             )
         canonical_name = str(response.data)
         if canonical_name.casefold() not in {
@@ -262,9 +294,9 @@ def load_user_collaborations(user_id):
                 })
 
     status_labels = {
-        "completed": "Completada",
-        "changes_requested": "Cambios solicitados",
-        "rejected": "Rechazada",
+        "completed": "Completed",
+        "changes_requested": "Changes requested",
+        "rejected": "Rejected",
     }
     for contribution in contributions:
         task = tasks.get(contribution["task_id"], {})
@@ -272,7 +304,7 @@ def load_user_collaborations(user_id):
         contribution["project"] = projects.get(task.get("project_id"), {})
         contribution["estado_label"] = status_labels.get(
             contribution.get("workflow_state"),
-            contribution.get("estado") or "—",
+            task_status_label(contribution.get("estado")),
         )
     return contributions
 
@@ -285,15 +317,15 @@ def render_new_skill_action(selected_skills, catalog, key):
         if str(skill).strip().casefold() not in known_names
     ]
     if new_skills and st.button(
-        "Añadir al catálogo: " + ", ".join(map(str, new_skills)),
+        "Add to catalog: " + ", ".join(map(str, new_skills)),
         key=key,
     ):
         try:
             add_skills_to_catalog(new_skills)
-            st.success("Habilidad añadida al catálogo compartido.")
+            st.success("Skill added to the shared catalog.")
             st.rerun()
         except Exception as error:
-            report_problem("Añadir habilidad al catálogo", error)
+            report_problem("Adding a skill to the catalog", error)
 
 
 def load_user_overview(user_id):
@@ -405,49 +437,60 @@ def render_task_details(task, user_skills=None):
         skills = [str(skills)] if skills else []
 
     details = (
-        ("Habilidades requeridas", ", ".join(str(skill) for skill in skills)),
-        ("Instrucciones", task.get("instrucciones")),
-        ("Objetivo", task.get("objetivo")),
-        ("Restricciones", task.get("restricciones")),
-        ("Entregables", task.get("entregables")),
-        ("Recursos", task.get("recursos")),
-        ("Criterios de aceptación", task.get("criterios_aceptacion")),
-        ("Modo de entrega", task.get("modo_entrega")),
-        ("Duración estimada", f"{task.get('duracion_estimada_horas') or '—'} horas"),
-        ("Dificultad", task.get("dificultad")),
+        ("Required skills", ", ".join(str(skill) for skill in skills)),
+        ("Instructions", task.get("instrucciones")),
+        ("Goal", task.get("objetivo")),
+        ("Constraints", task.get("restricciones")),
+        ("Deliverables", task.get("entregables")),
+        ("Resources", task.get("recursos")),
+        ("Acceptance criteria", task.get("criterios_aceptacion")),
         (
-            "Plazo de asignación",
-            f"{task.get('claim_timeout_hours') or '—'} horas",
+            "Delivery method",
+            delivery_method_label(task.get("modo_entrega")),
+        ),
+        ("Estimated effort", f"{task.get('duracion_estimada_horas') or '—'} hours"),
+        (
+            "Difficulty",
+            DIFFICULTY_FROM_DATABASE.get(
+                task.get("dificultad"), task.get("dificultad")
+            ),
+        ),
+        (
+            "Claim window",
+            f"{task.get('claim_timeout_hours') or '—'} hours",
         ),
     )
     for label, value in details:
         st.write(f"**{label}:** {value or '—'}")
 
     if user_skills is not None:
-        reward = DIFFICULTY_REWARDS.get(task.get("dificultad"), 0)
+        difficulty = DIFFICULTY_FROM_DATABASE.get(
+            task.get("dificultad"), task.get("dificultad")
+        )
+        reward = DIFFICULTY_REWARDS.get(difficulty, 0)
         owned_skills = {str(skill).casefold() for skill in user_skills}
         matched_skills = [
             str(skill)
             for skill in skills
             if str(skill).casefold() in owned_skills
         ]
-        st.write("**Reputación por habilidad:**")
+        st.write("**Reputation per skill:**")
         if matched_skills:
             st.write(
                 " · ".join(f"{skill}: +{reward}" for skill in matched_skills)
             )
             st.info(
-                f"Reputación total estimada por esta tarea: "
-                f"{len(matched_skills) * reward} puntos."
+                f"Estimated reputation for this task: "
+                f"{len(matched_skills) * reward} points."
             )
         else:
-            st.caption("No hay habilidades coincidentes para esta tarea.")
+            st.caption("None of your skills match this task yet.")
 
     repository_url = task.get("repositorio_url")
     if repository_url:
-        st.link_button("Repositorio destino", repository_url)
+        st.link_button("Open destination repository", repository_url)
     if task.get("deadline_at"):
-        st.caption(f"Fecha límite actual: {task['deadline_at']}")
+        st.caption(f"Current deadline: {task['deadline_at']}")
 
 
 # 1. Cargar variables de entorno y configuración
@@ -538,8 +581,7 @@ def get_supabase():
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.info(
-        "Configura SUPABASE_URL y SUPABASE_KEY en los secretos de la "
-        "aplicación para habilitar el acceso."
+        "Set SUPABASE_URL and SUPABASE_KEY in the app secrets to enable access."
     )
     st.stop()
 
@@ -547,7 +589,7 @@ if "supabase_client" not in st.session_state:
     try:
         st.session_state.supabase_client = get_supabase()
     except Exception:
-        report_problem("No se pudo inicializar Supabase")
+        report_problem("Initializing Supabase")
         st.stop()
 supabase = st.session_state.supabase_client
 
@@ -558,7 +600,7 @@ else:
     try:
         current_auth_session = supabase.auth.get_session()
     except Exception:
-        report_problem("Lectura de la sesión persistente")
+        report_problem("Reading the persistent session")
         storage_payload = None
     else:
         storage_payload = build_browser_storage_payload(
@@ -574,8 +616,7 @@ if (
     and browser_storage_result.get("error")
 ):
     st.warning(
-        "No se pudo leer o guardar la sesión y los borradores en el "
-        "almacenamiento local de este navegador."
+        "Could not read or save the session and drafts in this browser's local storage."
     )
 if (
     not st.session_state.get("_browser_storage_loaded")
@@ -602,7 +643,7 @@ if (
                 stored_auth["refresh_token"],
             )
         except Exception:
-            report_problem("Recuperación de la sesión persistente")
+            report_problem("Restoring the persistent session")
 
 if "user" not in st.session_state:
     try:
@@ -611,7 +652,7 @@ if "user" not in st.session_state:
             restored_session.user if restored_session else None
         )
     except Exception:
-        report_problem("No se pudo recuperar la sesión de Supabase")
+        report_problem("Restoring the Supabase session")
         st.session_state.user = None
 
 if st.session_state.user is None and st.query_params.get("code"):
@@ -623,47 +664,47 @@ if st.session_state.user is None and st.query_params.get("code"):
         st.query_params.clear()
         st.rerun()
     except Exception:
-        report_problem("No se pudo completar el inicio de sesión con GitHub")
+        report_problem("Completing GitHub sign-in")
 
 # ---------------------------------------------------------
-# PANTALLA 1: AUTENTICACIÓN (LOGIN / REGISTRO)
+# SCREEN 1: AUTHENTICATION (SIGN IN / REGISTRATION)
 # ---------------------------------------------------------
 if st.session_state.user is None:
     st.title("KelDev")
-    st.caption("Colabora, crea proyectos y desarrolla tus habilidades.")
+    st.caption("Collaborate, build projects, and grow your skills.")
 
    
-    tab_login, tab_registro = st.tabs(["Iniciar sesión", "Crear cuenta"])
+    tab_login, tab_registro = st.tabs(["Sign in", "Create account"])
 
     with tab_login:
         with st.container(border=True):
-            st.subheader("Bienvenido de nuevo")
-            email = st.text_input("Correo electrónico", key="login_email")
-            password = st.text_input("Contraseña", type="password", key="login_pass")
+            st.subheader("Welcome back")
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Password", type="password", key="login_pass")
 
-            if st.button("Entrar", type="primary", width="stretch"):
+            if st.button("Sign in", type="primary", width="stretch"):
                 try:
                     res = supabase.auth.sign_in_with_password(
                         {"email": email, "password": password}
                     )
                     st.session_state.user = res.user
-                    st.success("Sesión iniciada.")
+                    st.success("You are signed in.")
                     st.rerun()
                 except Exception:
-                    report_problem("Inicio de sesión")
+                    report_problem("Signing in")
 
     with tab_registro:
         with st.container(border=True):
-            st.subheader("Únete a la comunidad")
-            reg_email = st.text_input("Correo electrónico", key="reg_email")
+            st.subheader("Join the community")
+            reg_email = st.text_input("Email", key="reg_email")
             reg_password = st.text_input(
-                "Contraseña", type="password", key="reg_pass"
+                "Password", type="password", key="reg_pass"
             )
             reg_nombre = st.text_input(
-                "Nombre de desarrollador", key="reg_nombre"
+                "Developer name", key="reg_nombre"
             )
 
-            if st.button("Crear cuenta", type="primary", width="stretch"):
+            if st.button("Create account", type="primary", width="stretch"):
                 try:
                     res = supabase.auth.sign_up(
                         {
@@ -673,15 +714,15 @@ if st.session_state.user is None:
                         }
                     )
                     st.success(
-                        "Registro exitoso. Revisa tu bandeja para confirmar "
-                        "tu correo antes de entrar. Tu perfil se crea "
-                        "automáticamente."
+                        "Account created. Check your inbox to confirm your "
+                        "email before signing in. Your profile is created "
+                        "automatically."
                     )
                 except Exception:
-                    report_problem("Registro de usuario")
+                    report_problem("Registering a user")
 
 # ---------------------------------------------------------
-# PANTALLA 2: DASHBOARD PRINCIPAL
+# SCREEN 2: MAIN WORKSPACE
 # ---------------------------------------------------------
 else:
     usuario_activo = st.session_state.user.id
@@ -689,7 +730,7 @@ else:
         try:
             st.session_state.user_overview = load_user_overview(usuario_activo)
         except Exception:
-            report_problem("Carga de información de la cuenta")
+            report_problem("Loading account information")
             st.session_state.user_overview = {
                 "assigned_tasks": [],
                 "assigned_modules": [],
@@ -706,25 +747,25 @@ else:
     )
 
     opciones = {
-        "Mi Perfil": "Mi Perfil",
-        "Crear Proyecto": "Crear Proyecto",
-        "Colaborar": "Colaborar",
-        "Entregar Tarea": "Entregar Tarea",
-        "Mis Entregas": "Mis Entregas",
+        "My Profile": "My Profile",
+        "Create Project": "Create Project",
+        "Find Work": "Find Work",
+        "Submit Task": "Submit Task",
+        "My Submissions": "My Submissions",
     }
     if MODULE_WORKFLOWS_UI_ENABLED:
-        opciones["Redactar tareas"] = "Redactar tareas"
+        opciones["Draft Tasks"] = "Draft Tasks"
     if st.session_state.get("opcion_actual") not in opciones.values():
-        st.session_state.opcion_actual = "Mi Perfil"
+        st.session_state.opcion_actual = "My Profile"
 
     with st.sidebar:
         st.title("KelDev")
-        st.caption("Tu espacio para construir en comunidad")
+        st.caption("Build in the open, together.")
         st.divider()
-        st.markdown("**Sesión activa**")
+        st.markdown("**Signed in as**")
         st.write(st.session_state.user.email)
         st.divider()
-        st.markdown("**Navegación**")
+        st.markdown("**Navigation**")
         for etiqueta, destino in opciones.items():
             if st.button(
                 etiqueta,
@@ -739,11 +780,11 @@ else:
                 st.session_state.opcion_actual = destino
                 st.rerun()
         st.divider()
-        if st.button("Cerrar sesión", width="stretch"):
+        if st.button("Sign out", width="stretch"):
             try:
                 supabase.auth.sign_out()
             except Exception:
-                report_problem("Cierre de sesión")
+                report_problem("Signing out")
             else:
                 st.session_state.user = None
                 st.session_state.pop("overview_user_id", None)
@@ -751,12 +792,12 @@ else:
                 st.rerun()
 
     opcion = st.session_state.opcion_actual
-    st.title("Panel de trabajo")
-    st.caption("Gestiona tus proyectos y contribuciones desde un solo lugar.")
+    st.title("Workspace")
+    st.caption("Manage your projects and contributions in one place.")
     st.divider()
 
-    # --- MI PERFIL ---
-    if opcion == "Mi Perfil":
+    # --- MY PROFILE ---
+    if opcion == "My Profile":
         try:
             perfil_res = (
                 supabase.table("profiles")
@@ -768,10 +809,10 @@ else:
                 .execute()
             )
         except Exception:
-            report_problem("Carga del perfil")
+            report_problem("Loading the profile")
         else:
             if not perfil_res.data:
-                st.info("Tu perfil todavía no está disponible.")
+                st.info("Your profile is not available yet.")
             else:
                 perfil = perfil_res.data[0]
                 habilidades = profile_skill_names(
@@ -785,69 +826,69 @@ else:
                 try:
                     catalogo_habilidades = load_skill_catalog()
                 except Exception as error:
-                    report_problem("Carga del catálogo de habilidades", error)
+                    report_problem("Loading the skill catalog", error)
                     catalogo_habilidades = None
 
-                nombre = perfil.get("nombre") or "Desarrollador"
+                nombre = perfil.get("nombre") or "Developer"
                 reputacion_total = int(perfil.get("reputacion") or 0)
                 with st.container(border=True):
-                    st.markdown(f"### Hola, {nombre}")
+                    st.markdown(f"### Hello, {nombre}")
                     st.caption(
-                        f"Qué bueno tenerte aquí · "
+                        f"Welcome to the community · "
                         f"{perfil.get('email') or st.session_state.user.email}"
                     )
                     metric_col, completed_col = st.columns(2)
                     with metric_col:
-                        st.metric("Reputación total", reputacion_total)
+                        st.metric("Total reputation", reputacion_total)
                     with completed_col:
                         st.metric(
-                            "Tareas completadas",
+                            "Tasks completed",
                             int(perfil.get("tareas_completadas") or 0),
                         )
 
                 st.divider()
                 overview = st.session_state.get("user_overview") or {}
-                st.subheader("Tu trabajo asignado")
+                st.subheader("Your assigned work")
                 assigned_tasks = overview.get("assigned_tasks", [])
                 if assigned_tasks:
                     for assigned_task in assigned_tasks:
                         with st.expander(
-                            f"{assigned_task.get('titulo') or 'Tarea'} · "
-                            f"{assigned_task.get('estado') or 'sin estado'}"
+                            f"{assigned_task.get('titulo') or 'Task'} · "
+                            f"{task_status_label(assigned_task.get('estado'))}"
                         ):
                             render_task_details(assigned_task, habilidades)
                 else:
-                    st.info("No tienes tareas asignadas.")
+                    st.info("You have no assigned tasks.")
 
                 assigned_modules = overview.get("assigned_modules", [])
                 if assigned_modules:
-                    st.markdown("**Módulos asignados**")
+                    st.markdown("**Assigned modules**")
                     for module in assigned_modules:
                         st.write(
-                            f"**{module.get('titulo') or 'Módulo'}** · "
-                            f"{module.get('estado') or 'sin estado'} · "
-                            f"plazo: {module.get('deadline_at') or '—'}"
+                            f"**{module.get('titulo') or 'Module'}** · "
+                            f"{task_status_label(module.get('estado'))} · "
+                            f"deadline: {module.get('deadline_at') or '—'}"
                         )
 
-                st.subheader("Tus proyectos en marcha")
+                st.subheader("Your active projects")
                 active_projects = overview.get("active_projects", [])
                 if active_projects:
                     for project in active_projects:
                         st.write(
                             f"**{project['titulo']}** · "
-                            f"{project.get('descripcion') or 'Sin descripción'}"
+                            f"{project.get('descripcion') or 'No description'}"
                         )
                 else:
-                    st.info("No tienes proyectos con tareas pendientes.")
+                    st.info("You have no projects with open tasks.")
                 if st.button(
-                    "Actualizar información de la cuenta",
+                    "Refresh account overview",
                     key="refresh_account_overview",
                 ):
                     st.session_state.pop("overview_user_id", None)
                     st.rerun()
 
                 st.divider()
-                st.subheader("Tus habilidades")
+                st.subheader("Your skills")
                 habilidades_con_reputacion = sorted(
                     set(habilidades) | set(reputacion_habilidades),
                     key=str.casefold,
@@ -863,37 +904,37 @@ else:
                             with st.container(border=True):
                                 st.markdown(f"**{habilidad}**")
                                 st.metric(
-                                    "Puntos",
+                                    "Points",
                                     int(reputacion_habilidades.get(habilidad) or 0),
                                 )
                                 if habilidad not in habilidades:
-                                    st.caption("Habilidad histórica")
+                                    st.caption("Historical skill score")
                 else:
                     with st.container(border=True):
                         st.info(
-                            "Aún no tienes habilidades. Añade algunas para "
-                            "encontrar tareas compatibles."
+                            "You have not added any skills yet. Add skills to "
+                            "find tasks that match your experience."
                         )
 
                 col_editar, col_exportar = st.columns(2)
                 with col_editar:
-                    with st.expander("Editar perfil"):
+                    with st.expander("Edit profile"):
                         with st.form("form_editar_nombre"):
                             nombre_nuevo = st.text_input(
-                                "Nombre de desarrollador",
+                                "Developer name",
                                 value=perfil.get("nombre") or "",
                             )
                             descripcion_nueva = st.text_area(
-                                "Descripción para proyectos y tareas",
+                                "Profile description",
                                 value=perfil.get("descripcion") or "",
                             )
                             guardar_nombre = st.form_submit_button(
-                                "Actualizar nombre",
+                                "Save profile",
                                 width="stretch",
                             )
                         if guardar_nombre:
                             if not nombre_nuevo.strip():
-                                st.warning("El nombre no puede quedar vacío.")
+                                st.warning("Developer name cannot be empty.")
                             else:
                                 try:
                                     (
@@ -905,14 +946,14 @@ else:
                                         .eq("id", usuario_activo)
                                         .execute()
                                     )
-                                    st.success("Nombre actualizado.")
+                                    st.success("Profile updated.")
                                     invalidate_user_overview()
                                     st.rerun()
                                 except Exception:
-                                    report_problem("Actualización del perfil")
+                                    report_problem("Updating the profile")
 
                 with col_exportar:
-                    st.markdown("#### Exportar perfil")
+                    st.markdown("#### Export profile")
                     try:
                         colaboraciones = load_user_collaborations(usuario_activo)
                         perfil_pdf = {
@@ -925,24 +966,24 @@ else:
                             colaboraciones,
                         )
                     except Exception as error:
-                        report_problem("Generación del informe PDF", error)
+                        report_problem("Generating the profile PDF", error)
                     else:
                         st.download_button(
-                            "Descargar informe profesional (PDF)",
+                            "Download professional profile (PDF)",
                             data=perfil_pdf_bytes,
                             file_name="informe-profesional-keldev.pdf",
                             mime="application/pdf",
                             width="stretch",
                         )
 
-                with st.expander("Editar habilidades"):
+                with st.expander("Edit skills"):
                     if catalogo_habilidades is None:
                         st.warning(
-                            "No se pudo cargar el catálogo de habilidades."
+                            "Could not load the skill catalog."
                         )
                     else:
                         habilidades_seleccionadas = st.multiselect(
-                            "Tus habilidades",
+                            "Your skills",
                             options=catalogo_habilidades,
                             default=[
                                 skill for skill in habilidades
@@ -951,9 +992,8 @@ else:
                             key="profile_skills_multiselect",
                             accept_new_options=True,
                             help=(
-                                "Busca en el catálogo o escribe una habilidad "
-                                "nueva. Las habilidades nuevas se comparten "
-                                "con todas las personas."
+                                "Search the catalog or enter a new skill. New "
+                                "skills are shared with the community."
                             ),
                         )
                         render_new_skill_action(
@@ -962,7 +1002,7 @@ else:
                             "add_profile_skills_to_catalog",
                         )
                         if st.button(
-                            "Guardar habilidades del perfil",
+                            "Save profile skills",
                             key="save_profile_skills",
                             type="primary",
                         ):
@@ -978,22 +1018,22 @@ else:
                                     .eq("id", usuario_activo)
                                     .execute()
                                 )
-                                st.success("Habilidades actualizadas.")
+                                st.success("Skills updated.")
                                 invalidate_user_overview()
                                 st.rerun()
                             except Exception as error:
                                 report_problem(
-                                    "Actualización de habilidades", error
+                                    "Updating profile skills", error
                                 )
 
-    # --- OPCIÓN 1: CREAR PROYECTO Y TAREAS ---
-    elif opcion == "Crear Proyecto":
+    # --- OPTION 1: CREATE A PROJECT AND TASKS ---
+    elif opcion == "Create Project":
         try:
             catalogo_tareas = load_skill_catalog()
         except Exception as error:
-            report_problem("Carga del catálogo de habilidades", error)
+            report_problem("Loading the skill catalog", error)
             catalogo_tareas = None
-        st.subheader("Crear un nuevo proyecto")
+        st.subheader("Create a project")
         if MODULE_WORKFLOWS_UI_ENABLED:
             render_module_task_proposals(usuario_activo)
         with st.container(border=True):
@@ -1001,51 +1041,50 @@ else:
                 st.session_state.project_title = ""
                 st.session_state.project_description = ""
             st.write(
-                "Define el proyecto y sus tareas, o genera un borrador editable "
-                "con Groq (Google AI Studio se usa como respaldo) antes de "
-                "publicarlo."
+                "Describe the project and its tasks, or generate an editable "
+                "draft with Groq (Google AI Studio is used as a fallback) "
+                "before publishing."
             )
             proj_titulo = st.text_input(
-                "Nombre del proyecto",
+                "Project name",
                 key="project_title",
                 placeholder=(
-                    "Ej.: Plataforma web para coordinar campañas de "
-                    "voluntariado, asignar tareas y seguir su progreso"
+                    "Example: A web platform to coordinate volunteer "
+                    "campaigns, assign tasks, and track progress"
                 ),
             )
             proj_desc = st.text_area(
-                "Descripción del proyecto",
+                "Project description",
                 key="project_description",
                 placeholder=(
-                    "Explica el problema que resolverá y quién lo usará. "
-                    "Detalla las funciones principales, el resultado esperado, "
-                    "las tecnologías y restricciones (incluida la estructura "
-                    "actual del proyecto, si existe), y cómo comprobar que "
-                    "funciona. Añade la URL base del repositorio de GitHub "
-                    "(https://github.com/propietario/repositorio) para que la "
-                    "IA pueda asignarla a las tareas."
+                    "Explain the problem, who will use the project, its main "
+                    "features, expected outcome, technologies, constraints, "
+                    "and how to verify it works. Include the current project "
+                    "structure if one exists. Add the base GitHub repository "
+                    "URL (https://github.com/owner/repository) so AI can add "
+                    "it to each task."
                 ),
             )
             review_mode = "direct"
             if MODULE_WORKFLOWS_UI_ENABLED:
                 creation_mode = st.radio(
-                    "Cómo definir el trabajo",
+                    "How would you like to define the work?",
                     [
-                        "Redactaré las tareas",
-                        "Publicaré módulos para recibir propuestas",
+                        "I will write the tasks",
+                        "I will publish modules for task proposals",
                     ],
                     horizontal=True,
                 )
             else:
-                creation_mode = "Redactaré las tareas"
+                creation_mode = "I will write the tasks"
             if (
                 MODULE_WORKFLOWS_UI_ENABLED
-                and creation_mode == "Publicaré módulos para recibir propuestas"
+                and creation_mode == "I will publish modules for task proposals"
             ):
                 st.caption(
-                    "Cada módulo se asigna a un colaborador compatible. "
-                    "El creador revisa y aprueba las tareas propuestas antes "
-                    "de publicarlas."
+                    "Each module is assigned to a contributor with matching "
+                    "skills. The project owner reviews proposed tasks before "
+                    "publishing them."
                 )
                 if "project_module_drafts" not in st.session_state:
                     st.session_state.project_module_drafts = [{
@@ -1078,25 +1117,25 @@ else:
                     width="stretch",
                     hide_index=True,
                     column_config={
-                        "titulo": st.column_config.TextColumn("Módulo"),
+                        "titulo": st.column_config.TextColumn(                        "Module"),
                         "descripcion": st.column_config.TextColumn(
-                            "Alcance del módulo"
+                            "Module scope"
                         ),
                         "repositorio_url": st.column_config.TextColumn(
-                            "Repositorio destino de GitHub"
+                            "GitHub destination repository"
                         ),
                         "habilidades_requeridas": st.column_config.TextColumn(
-                            "Habilidades separadas por comas"
+                            "Skills, separated by commas"
                         ),
                         "claim_timeout_hours": st.column_config.NumberColumn(
-                            "Plazo de redacción (h)",
+                            "Drafting window (hours)",
                             min_value=1,
                             max_value=720,
                             step=1,
                             required=True,
                         ),
                         "task_claim_timeout_hours": st.column_config.NumberColumn(
-                            "Plazo de ejecución de tareas (h)",
+                            "Task completion window (hours)",
                             min_value=1,
                             max_value=720,
                             step=1,
@@ -1104,7 +1143,7 @@ else:
                         ),
                     },
                 )
-                if st.button("Publicar proyecto y módulos", type="primary"):
+                if st.button("Publish project and modules", type="primary"):
                     modules_to_save = []
                     errors = []
                     for index, module in enumerate(module_drafts, start=1):
@@ -1139,16 +1178,16 @@ else:
                                 or not 1 <= int(value) <= 720
                             ):
                                 errors.append(
-                                    f"Módulo {index}: {field} debe estar entre 1 y 720 horas"
+                                    f"Module {index}: {field} must be between 1 and 720 hours"
                                 )
                                 normalized_module[field] = 0
                             else:
                                 normalized_module[field] = int(value)
                         normalized_module["creator_review_timeout_hours"] = 72
                         if not normalized_module["titulo"]:
-                            errors.append(f"Módulo {index}: falta el título")
+                            errors.append(f"Module {index}: title is required")
                         if not normalized_module["descripcion"]:
-                            errors.append(f"Módulo {index}: falta la descripción")
+                            errors.append(f"Module {index}: description is required")
                         try:
                             normalized_module["repositorio_url"] = (
                                 validate_github_code_url(
@@ -1157,15 +1196,15 @@ else:
                             )
                         except ValueError:
                             errors.append(
-                                f"Módulo {index}: indica el repositorio HTTPS de GitHub del proyecto"
+                                f"Module {index}: enter the project's HTTPS GitHub repository URL"
                             )
                         if not normalized_module["habilidades_requeridas"]:
-                            errors.append(f"Módulo {index}: faltan habilidades")
+                            errors.append(f"Module {index}: add at least one skill")
                         modules_to_save.append(normalized_module)
                     if not proj_titulo.strip() or not proj_desc.strip():
-                        errors.append("Completa el nombre y descripción del proyecto.")
+                        errors.append("Enter a project name and description.")
                     if not modules_to_save:
-                        errors.append("Añade al menos un módulo.")
+                        errors.append("Add at least one module.")
                     if errors:
                         st.warning(" ".join(errors))
                     else:
@@ -1179,11 +1218,11 @@ else:
                                     "p_review_mode": review_mode,
                                 },
                             ).execute()
-                            st.success("Proyecto y módulos publicados.")
+                            st.success("Project and modules published.")
                             invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            report_problem("Publicación de módulos")
+                            report_problem("Publishing modules")
                 st.stop()
 
             if "project_task_drafts" not in st.session_state:
@@ -1196,13 +1235,17 @@ else:
                     "entregables": "",
                     "recursos": "",
                     "criterios_aceptacion": "",
-                    "modo_entrega": "Pull Request de GitHub",
+                    "modo_entrega": "Direct GitHub pull request with the required changes and tests.",
                     "repositorio_url": "",
                     "duracion_estimada_horas": 4,
-                    "dificultad": "Medio",
+                    "dificultad": "Medium",
                     "claim_timeout_hours": 72,
                 }]
                 st.session_state.project_task_draft_version = 0
+            for task_draft in st.session_state.project_task_drafts:
+                difficulty = task_draft.get("dificultad")
+                if difficulty in DIFFICULTY_FROM_DATABASE:
+                    task_draft["dificultad"] = DIFFICULTY_FROM_DATABASE[difficulty]
             removed_task_review_fields = False
             for task_draft in st.session_state.project_task_drafts:
                 for field in (
@@ -1229,7 +1272,7 @@ else:
                 ]
 
             if st.button(
-                "Generar borrador con Inteligencia Artificial",
+                "Generate task draft with AI",
                 disabled=not proj_titulo.strip() or not proj_desc.strip(),
             ):
                 try:
@@ -1243,6 +1286,9 @@ else:
                             "habilidades_requeridas": ", ".join(
                                 task["habilidades_requeridas"]
                             ),
+                            "dificultad": DIFFICULTY_FROM_DATABASE.get(
+                                task["dificultad"], task["dificultad"]
+                            ),
                             "claim_timeout_hours": 72,
                         }
                         for task in generated
@@ -1255,17 +1301,15 @@ else:
                         task["titulo"] for task in generated
                     ]
                     st.session_state.project_task_draft_version += 1
-                    st.success(
-                        "Borrador generado. Revísalo y edítalo antes de guardar."
-                    )
+                    st.success("Draft generated. Review and edit it before saving.")
                     st.rerun()
                 except Exception as e:
-                    report_problem("Generación de tareas")
+                    report_problem("Generating tasks")
 
-            st.markdown("#### Tareas del proyecto (editables)")
+            st.markdown("#### Project tasks (editable)")
             st.caption(
-                "Puedes editar las celdas y añadir o eliminar filas directamente "
-                "en la tabla. El plazo de ejecución se expresa en horas."
+                "Edit cells and add or remove rows directly in the table. Task "
+                "completion windows are measured in hours."
             )
             editor_key = (
                 f"project_tasks_editor_"
@@ -1291,33 +1335,33 @@ else:
                 width="stretch",
                 hide_index=True,
                 column_config={
-                    "titulo": st.column_config.TextColumn("Título"),
-                    "instrucciones": st.column_config.TextColumn("Instrucciones"),
-                    "objetivo": st.column_config.TextColumn("Objetivo"),
-                    "restricciones": st.column_config.TextColumn("Restricciones"),
-                    "entregables": st.column_config.TextColumn("Entregables"),
-                    "recursos": st.column_config.TextColumn("Recursos"),
+                    "titulo": st.column_config.TextColumn("Title"),
+                    "instrucciones": st.column_config.TextColumn("Instructions"),
+                    "objetivo": st.column_config.TextColumn("Goal"),
+                    "restricciones": st.column_config.TextColumn("Constraints"),
+                    "entregables": st.column_config.TextColumn("Deliverables"),
+                    "recursos": st.column_config.TextColumn("Resources"),
                     "criterios_aceptacion": st.column_config.TextColumn(
-                        "Criterios de aceptación"
+                        "Acceptance criteria"
                     ),
-                    "modo_entrega": st.column_config.TextColumn("Modo de entrega"),
+                    "modo_entrega": st.column_config.TextColumn("Delivery method"),
                     "repositorio_url": st.column_config.TextColumn(
-                        "Repositorio destino (GitHub)"
+                        "GitHub destination repository"
                     ),
                     "duracion_estimada_horas": st.column_config.NumberColumn(
-                        "Duración estimada (horas)",
+                        "Estimated effort (hours)",
                         min_value=1,
                         max_value=8,
                         step=1,
                         required=True,
                     ),
                     "dificultad": st.column_config.SelectboxColumn(
-                        "Dificultad",
+                        "Difficulty",
                         options=list(TASK_DIFFICULTIES),
                         required=True,
                     ),
                     "claim_timeout_hours": st.column_config.NumberColumn(
-                        "Plazo de ejecución (h)",
+                        "Claim window (hours)",
                         min_value=1,
                         max_value=720,
                         step=1,
@@ -1328,7 +1372,7 @@ else:
 
             habilidades_por_tarea = []
             if catalogo_tareas is not None:
-                st.markdown("#### Habilidades requeridas por tarea")
+                st.markdown("#### Skills required for each task")
                 title_occurrences = {}
                 for index, task in enumerate(edited_tasks):
                     drafted_skills = st.session_state.get(
@@ -1363,11 +1407,11 @@ else:
                         initial_skills,
                     )
                     with st.expander(
-                        f"{index + 1}. {title or 'Tarea'}",
+                        f"{index + 1}. {title or 'Task'}",
                         expanded=True,
                     ):
                         selected_skills = st.multiselect(
-                            "Habilidades",
+                            "Required skills",
                             options=skill_options,
                             default=selected_defaults,
                             key=(
@@ -1377,8 +1421,8 @@ else:
                             ),
                             accept_new_options=True,
                             help=(
-                                "Busca una habilidad existente o escribe una "
-                                "nueva para incorporarla al catálogo compartido."
+                                "Search for an existing skill or enter a new "
+                                "one to add it to the shared catalog."
                             ),
                         )
                         render_new_skill_action(
@@ -1394,11 +1438,11 @@ else:
                         drafted_skills[index] = selected_skills
                         drafted_titles[index] = title
 
-            if st.button("Guardar proyecto y tareas", type="primary"):
+            if st.button("Save project and tasks", type="primary"):
                 if not proj_titulo.strip() or not proj_desc.strip():
-                    st.warning("Completa el nombre y la descripción del proyecto.")
+                    st.warning("Enter a project name and description.")
                 elif not edited_tasks:
-                    st.warning("Añade al menos una tarea.")
+                    st.warning("Add at least one task.")
                 else:
                     tasks_to_save = []
                     missing_fields = []
@@ -1432,14 +1476,14 @@ else:
                         )
                         if not duration_valid:
                             missing_fields.append(
-                                f"Tarea {index}: duración estimada inválida"
+                                f"Task {index}: estimated effort must be a whole number"
                             )
                             normalized["duracion_estimada_horas"] = 0
                         else:
                             normalized["duracion_estimada_horas"] = int(duration)
                             if not 1 <= normalized["duracion_estimada_horas"] <= 8:
                                 missing_fields.append(
-                                    f"Tarea {index}: duración entre 1 y 8 horas"
+                                    f"Task {index}: estimated effort must be between 1 and 8 hours"
                                 )
                         normalized["habilidades_requeridas"] = [
                             str(skill).strip()
@@ -1455,7 +1499,7 @@ else:
                         normalized["creator_review_timeout_hours"] = 72
                         for field, value in normalized.items():
                             if not value:
-                                missing_fields.append(f"Tarea {index}: {field}")
+                                missing_fields.append(f"Task {index}: {field}")
                         try:
                             normalized["repositorio_url"] = (
                                 validate_github_code_url(
@@ -1464,11 +1508,11 @@ else:
                             )
                         except ValueError:
                             missing_fields.append(
-                                f"Tarea {index}: repositorio_url debe ser un enlace HTTPS de GitHub"
+                                f"Task {index}: repository_url must be a valid HTTPS GitHub link"
                             )
                         if not normalized["habilidades_requeridas"]:
                             missing_fields.append(
-                                f"Tarea {index}: habilidades_requeridas"
+                                f"Task {index}: add at least one required skill"
                             )
                         for timeout_field in ("claim_timeout_hours",):
                             timeout = task.get(timeout_field)
@@ -1481,25 +1525,28 @@ else:
                                 or not 1 <= int(timeout) <= 720
                             ):
                                 missing_fields.append(
-                                    f"Tarea {index}: {timeout_field} debe estar entre 1 y 720 horas"
+                                    f"Task {index}: {timeout_field} must be between 1 and 720 hours"
                                 )
                                 normalized[timeout_field] = 0
                             else:
                                 normalized[timeout_field] = int(timeout)
                         if normalized["dificultad"] not in TASK_DIFFICULTIES:
                             missing_fields.append(
-                                f"Tarea {index}: dificultad debe ser "
-                                "Fácil, Medio o Difícil"
+                                f"Task {index}: difficulty must be Easy, Medium, or Hard"
                             )
+                        else:
+                            normalized["dificultad"] = DIFFICULTY_TO_DATABASE[
+                                normalized["dificultad"]
+                            ]
                         tasks_to_save.append(normalized)
 
                     if catalogo_tareas is None:
                         st.warning(
-                            "No se pudo cargar el catálogo; inténtalo de nuevo."
+                            "Could not load the skill catalog. Please try again."
                         )
                     elif missing_fields:
                         st.warning(
-                            "Completa los campos obligatorios: "
+                            "Complete the required fields: "
                             + ", ".join(missing_fields)
                         )
                     else:
@@ -1520,8 +1567,8 @@ else:
                                 },
                             ).execute()
                             st.success(
-                                f"Proyecto '{proj_titulo.strip()}' y "
-                                f"{len(tasks_to_save)} tareas creados."
+                                f"Created project '{proj_titulo.strip()}' with "
+                                f"{len(tasks_to_save)} tasks."
                             )
                             st.session_state.project_task_drafts = [{
                                 "titulo": "",
@@ -1532,9 +1579,9 @@ else:
                                 "entregables": "",
                                 "recursos": "",
                                 "criterios_aceptacion": "",
-                                "modo_entrega": "Pull Request de GitHub",
+                                "modo_entrega": "Direct GitHub pull request with the required changes and tests.",
                                 "duracion_estimada_horas": 4,
-                                "dificultad": "Medio",
+                                "dificultad": "Medium",
                                 "repositorio_url": "",
                                 "claim_timeout_hours": 72,
                             }]
@@ -1545,10 +1592,10 @@ else:
                             invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            report_problem("Guardado del proyecto", e)
-    # --- OPCIÓN 2: COLABORAR ---
-    elif opcion == "Colaborar":
-        st.subheader("Tareas disponibles")
+                            report_problem("Saving the project", e)
+    # --- OPTION 2: FIND WORK ---
+    elif opcion == "Find Work":
+        st.subheader("Available tasks")
         with st.container(border=True):
             try:
                 res_pendiente = (
@@ -1559,17 +1606,17 @@ else:
                     .execute()
                 )
             except Exception as e:
-                report_problem("Carga de tareas asignadas")
+                report_problem("Loading assigned tasks")
             else:
                 if res_pendiente.data:
                     tarea_actual = res_pendiente.data[0]
                     st.warning(
-                        f"Ya tienes una tarea en progreso: "
+                        f"You already have a task in progress: "
                         f"**{tarea_actual['titulo']}**"
                     )
                     if tarea_actual.get("deadline_at"):
                         st.caption(
-                            f"Plazo de esta asignación: "
+                            f"Claim deadline: "
                             f"{tarea_actual['deadline_at']}"
                         )
                     render_task_details(tarea_actual, habilidades_actuales)
@@ -1592,10 +1639,10 @@ else:
                                 latest_contribution.data[0].get(
                                     "creator_feedback"
                                 )
-                                or "Se solicitaron cambios en la última entrega."
+                                or "Changes were requested on your latest submission."
                             )
                     except Exception as e:
-                        report_problem("Carga de comentarios de entrega")
+                        report_problem("Loading submission feedback")
                 else:
                     try:
                         active_modules = None
@@ -1608,20 +1655,19 @@ else:
                                 .execute()
                             )
                     except Exception as e:
-                        report_problem("Carga de módulos asignados")
+                        report_problem("Loading assigned modules")
                     else:
                         if active_modules and active_modules.data:
                             module_title = active_modules.data[0]["titulo"]
                             st.info(
-                                f"Ya tienes asignado el módulo «{module_title}». "
-                                "Termina de redactar sus tareas antes de aceptar "
-                                "otra asignación."
+                                f"You are already assigned to module “{module_title}”. "
+                                "Finish drafting its tasks before accepting another assignment."
                             )
                             if MODULE_WORKFLOWS_UI_ENABLED and st.button(
-                                "Continuar con mi módulo",
+                                "Continue with my module",
                                 key="continue_assigned_module",
                             ):
-                                st.session_state.opcion_actual = "Redactar tareas"
+                                st.session_state.opcion_actual = "Draft Tasks"
                                 st.rerun()
                         else:
                             try:
@@ -1632,20 +1678,19 @@ else:
                                     or []
                                 )
                             except Exception as e:
-                                report_problem("Búsqueda de tareas compatibles")
+                                report_problem("Finding compatible tasks")
                             else:
                                 if not compatible:
                                     st.info(
-                                        "No hay tareas pendientes que coincidan con "
-                                        "tus habilidades. Añade habilidades en Mi Perfil "
-                                        "o vuelve más tarde."
+                                        "No open tasks match your skills. Add skills "
+                                        "to My Profile or check back later."
                                     )
                                 for task in compatible:
                                     with st.container(border=True):
                                         st.markdown(f"### {task['titulo']}")
                                         render_task_details(task, habilidades_actuales)
                                         if st.button(
-                                            "Colaborar en esta tarea",
+                                            "Claim this task",
                                             key=f"claim_task_{task['id']}",
                                             type="primary",
                                         ):
@@ -1655,16 +1700,16 @@ else:
                                                     {"p_task_id": str(task["id"])},
                                                 ).execute()
                                                 st.success(
-                                                    f"Se te asignó '{task['titulo']}'."
+                                                    f"You claimed '{task['titulo']}'."
                                                 )
                                                 invalidate_user_overview()
                                                 st.rerun()
                                             except Exception as e:
-                                                report_problem("Asignación de tarea")
+                                                report_problem("Claiming a task")
 
-    # --- REDACTAR TAREAS PARA UN MÓDULO ---
-    elif opcion == "Redactar tareas":
-        st.subheader("Redactar tareas para un módulo")
+    # --- DRAFT TASKS FOR A MODULE ---
+    elif opcion == "Draft Tasks":
+        st.subheader("Draft tasks for a module")
         try:
             assigned_modules = (
                 supabase.table("project_modules")
@@ -1677,13 +1722,13 @@ else:
                 .execute()
             )
         except Exception as e:
-            report_problem("Carga de módulo asignado")
+            report_problem("Loading the assigned module")
             assigned_modules = None
         if assigned_modules and assigned_modules.data:
             module = assigned_modules.data[0]
             st.markdown(f"### {module['titulo']}")
             st.write(module.get("descripcion") or "—")
-            st.caption(f"Plazo de redacción: {module.get('deadline_at') or '—'}")
+            st.caption(f"Drafting deadline: {module.get('deadline_at') or '—'}")
             try:
                 last_proposal = (
                     supabase.table("module_task_proposals")
@@ -1700,14 +1745,14 @@ else:
                 ):
                     st.warning(
                         last_proposal.data[0].get("feedback")
-                        or "El creador solicitó cambios."
+                        or "The project owner requested changes."
                     )
             except Exception as e:
-                report_problem("Carga de respuesta del creador")
+                report_problem("Loading project owner feedback")
             try:
                 catalogo_modulo = load_skill_catalog()
             except Exception as error:
-                report_problem("Carga del catálogo de habilidades", error)
+                report_problem("Loading the skill catalog", error)
                 catalogo_modulo = None
             draft_key = f"module_task_drafts_{module['id']}"
             version_key = f"module_task_draft_version_{module['id']}"
@@ -1721,12 +1766,16 @@ else:
                     "entregables": "",
                     "recursos": "",
                     "criterios_aceptacion": "",
-                    "modo_entrega": "Pull Request de GitHub",
+                    "modo_entrega": "Direct GitHub pull request with the required changes and tests.",
                     "repositorio_url": module["repositorio_url"],
                     "duracion_estimada_horas": 4,
-                    "dificultad": "Medio",
+                    "dificultad": "Medium",
                 }]
                 st.session_state[version_key] = 0
+            for task_draft in st.session_state[draft_key]:
+                difficulty = task_draft.get("dificultad")
+                if difficulty in DIFFICULTY_FROM_DATABASE:
+                    task_draft["dificultad"] = DIFFICULTY_FROM_DATABASE[difficulty]
             removed_module_task_review_fields = False
             for task_draft in st.session_state[draft_key]:
                 removed_module_task_review_fields |= (
@@ -1757,31 +1806,31 @@ else:
                 width="stretch",
                 hide_index=True,
                 column_config={
-                    "titulo": st.column_config.TextColumn("Título"),
-                    "instrucciones": st.column_config.TextColumn("Instrucciones"),
-                    "objetivo": st.column_config.TextColumn("Objetivo"),
-                    "restricciones": st.column_config.TextColumn("Restricciones"),
-                    "entregables": st.column_config.TextColumn("Entregables"),
-                    "recursos": st.column_config.TextColumn("Recursos"),
+                    "titulo": st.column_config.TextColumn("Title"),
+                    "instrucciones": st.column_config.TextColumn("Instructions"),
+                    "objetivo": st.column_config.TextColumn("Goal"),
+                    "restricciones": st.column_config.TextColumn("Constraints"),
+                    "entregables": st.column_config.TextColumn("Deliverables"),
+                    "recursos": st.column_config.TextColumn("Resources"),
                     "criterios_aceptacion": st.column_config.TextColumn(
-                        "Criterios de aceptación"
+                        "Acceptance criteria"
                     ),
-                    "modo_entrega": st.column_config.TextColumn("Modo de entrega"),
+                    "modo_entrega": st.column_config.TextColumn("Delivery method"),
                     "repositorio_url": st.column_config.TextColumn(
-                        "Repositorio destino (definido por creador)",
+                        "Destination repository (set by project owner)",
                         disabled=True,
                     ),
                     "duracion_estimada_horas": st.column_config.NumberColumn(
-                        "Estimación (h)", min_value=1, max_value=8, step=1
+                        "Estimated effort (hours)", min_value=1, max_value=8, step=1
                     ),
                     "dificultad": st.column_config.SelectboxColumn(
-                        "Dificultad", options=list(TASK_DIFFICULTIES)
+                        "Difficulty", options=list(TASK_DIFFICULTIES)
                     ),
                 },
             )
             skills_by_proposed_task = []
             if catalogo_modulo is not None:
-                st.markdown("#### Habilidades requeridas por tarea")
+                st.markdown("#### Skills required for each task")
                 for index, task in enumerate(proposed_tasks):
                     initial_skills = (
                         st.session_state[skills_draft_key][index]
@@ -1796,18 +1845,18 @@ else:
                         if str(skill).strip()
                     ]
                     with st.expander(
-                        f"{index + 1}. {task.get('titulo') or 'Tarea'}",
+                        f"{index + 1}. {task.get('titulo') or 'Task'}",
                         expanded=True,
                     ):
                         selected_skills = st.multiselect(
-                            "Habilidades",
+                            "Required skills",
                             options=catalogo_modulo,
                             default=initial_skills,
                             key=f"{skills_draft_key}_{st.session_state[version_key]}_{index}",
                             accept_new_options=True,
                             help=(
-                                "Busca una habilidad o escribe una nueva para "
-                                "añadirla al catálogo compartido."
+                                "Search for a skill or enter a new one to add "
+                                "it to the shared catalog."
                             ),
                         )
                         render_new_skill_action(
@@ -1817,7 +1866,7 @@ else:
                         )
                         skills_by_proposed_task.append(selected_skills)
             if st.button(
-                "Enviar propuesta al creador",
+                "Send proposal to the project owner",
                 type="primary",
                 key=f"submit_module_proposal_{module['id']}",
             ):
@@ -1844,7 +1893,7 @@ else:
                     normalized_task["review_mode"] = "direct"
                     for field, value in normalized_task.items():
                         if not value:
-                            errors.append(f"Tarea {index}: falta {field}")
+                            errors.append(f"Task {index}: {field} is required")
                     normalized_task["habilidades_requeridas"] = [
                         str(skill).strip()
                         for skill in (
@@ -1855,7 +1904,7 @@ else:
                         if str(skill).strip()
                     ]
                     if not normalized_task["habilidades_requeridas"]:
-                        errors.append(f"Tarea {index}: añade habilidades")
+                        errors.append(f"Task {index}: add at least one skill")
                     duration = row.get("duracion_estimada_horas")
                     if isinstance(duration, str) and duration.isdigit():
                         duration = int(duration)
@@ -1866,18 +1915,22 @@ else:
                         or not 1 <= int(duration) <= 8
                     ):
                         errors.append(
-                            f"Tarea {index}: la estimación debe ser de 1 a 8 horas"
+                            f"Task {index}: estimated effort must be between 1 and 8 hours"
                         )
                     else:
                         normalized_task["duracion_estimada_horas"] = int(duration)
                     if normalized_task["dificultad"] not in TASK_DIFFICULTIES:
-                        errors.append(f"Tarea {index}: dificultad no válida")
+                        errors.append(f"Task {index}: invalid difficulty")
+                    else:
+                        normalized_task["dificultad"] = DIFFICULTY_TO_DATABASE[
+                            normalized_task["dificultad"]
+                        ]
                     tasks_to_propose.append(normalized_task)
                 if not tasks_to_propose:
-                    errors.append("Añade al menos una tarea.")
+                    errors.append("Add at least one task.")
                 if catalogo_modulo is None:
                     st.warning(
-                        "No se pudo cargar el catálogo; inténtalo de nuevo."
+                        "Could not load the skill catalog. Please try again."
                     )
                 elif errors:
                     st.warning(" ".join(errors))
@@ -1896,7 +1949,7 @@ else:
                                 "p_tasks": tasks_to_propose,
                             },
                         ).execute()
-                        st.success("Propuesta enviada al creador.")
+                        st.success("Proposal sent to the project owner.")
                         st.session_state[draft_key] = [{
                             "titulo": "",
                             "habilidades_requeridas": "",
@@ -1906,17 +1959,17 @@ else:
                             "entregables": "",
                             "recursos": "",
                             "criterios_aceptacion": "",
-                            "modo_entrega": "Pull Request de GitHub",
+                            "modo_entrega": "Direct GitHub pull request with the required changes and tests.",
                             "repositorio_url": module["repositorio_url"],
                             "duracion_estimada_horas": 4,
-                            "dificultad": "Medio",
+                            "dificultad": "Medium",
                         }]
                         st.session_state[skills_draft_key] = [[]]
                         st.session_state[version_key] += 1
                         invalidate_user_overview()
                         st.rerun()
                     except Exception as e:
-                        report_problem("Envío de propuesta")
+                        report_problem("Sending the proposal")
         else:
             try:
                 own_proposals = (
@@ -1928,7 +1981,7 @@ else:
                     .execute()
                 )
                 if own_proposals.data:
-                    st.subheader("Tus propuestas recientes")
+                    st.subheader("Your recent proposals")
                     proposal_module_ids = {
                         proposal["module_id"] for proposal in own_proposals.data
                     }
@@ -1944,35 +1997,35 @@ else:
                             module_titles[module_id] = result.data[0]["titulo"]
                     for proposal in own_proposals.data:
                         st.write(
-                            f"**{module_titles.get(proposal['module_id'], 'Módulo')}** · "
-                            f"{proposal['estado']}"
+                            f"**{module_titles.get(proposal['module_id'], 'Module')}** · "
+                            f"{task_status_label(proposal['estado'])}"
                         )
                         if proposal.get("feedback"):
                             st.warning(proposal["feedback"])
             except Exception as e:
-                report_problem("Carga de propuestas")
+                report_problem("Loading proposals")
             try:
                 compatible_modules = (
                     supabase.rpc("find_compatible_modules").execute().data or []
                 )
             except Exception as e:
-                report_problem("Búsqueda de módulos compatibles")
+                report_problem("Finding compatible modules")
                 compatible_modules = []
             if not compatible_modules:
                 st.info(
-                    "No hay módulos disponibles que coincidan con tus habilidades."
+                    "No available modules match your skills."
                 )
             for module in compatible_modules:
                 with st.container(border=True):
                     st.markdown(f"### {module['titulo']}")
-                    st.caption(f"Proyecto: {module['project_id']}")
+                    st.caption(f"Project ID: {module['project_id']}")
                     st.write(module.get("descripcion") or "—")
                     st.write(
-                        f"Habilidades requeridas: "
+                        f"Required skills: "
                         f"{', '.join(module.get('habilidades_requeridas') or [])}"
                     )
                     if st.button(
-                        "Redactar tareas",
+                        "Draft tasks",
                         key=f"claim_module_{module['id']}",
                         type="primary",
                     ):
@@ -1981,15 +2034,15 @@ else:
                                 "claim_project_module",
                                 {"p_module_id": module["id"]},
                             ).execute()
-                            st.success("El módulo se te ha asignado.")
+                            st.success("The module is assigned to you.")
                             invalidate_user_overview()
                             st.rerun()
                         except Exception as e:
-                            report_problem("Asignación de módulo")
+                            report_problem("Claiming a module")
 
-    # --- OPCIÓN 3: ENTREGAR TAREA ---
-    elif opcion == "Entregar Tarea":
-        st.subheader("Entregar tarea")
+    # --- OPTION 3: SUBMIT A TASK ---
+    elif opcion == "Submit Task":
+        st.subheader("Submit a task")
         with st.container(border=True):
             try:
                 res_tarea = (
@@ -2005,19 +2058,19 @@ else:
                     .execute()
                 )
             except Exception as e:
-                report_problem("Carga de tarea asignada")
+                report_problem("Loading the assigned task")
             else:
                 if not res_tarea.data:
-                    st.info("No tienes tareas en progreso para entregar.")
+                    st.info("You have no in-progress tasks to submit.")
                 else:
                     tarea = res_tarea.data[0]
                     st.markdown(f"### {tarea['titulo']}")
                     render_task_details(tarea, habilidades_actuales)
                     github_url = st.text_input(
-                        "Enlace a la Pull Request de GitHub"
+                        "GitHub pull request URL"
                     )
                     if st.button(
-                        "Enviar Pull Request",
+                        "Submit pull request",
                         type="primary",
                     ):
                         try:
@@ -2035,7 +2088,7 @@ else:
                                 != target_repository.casefold()
                             ):
                                 raise ValueError(
-                                    "La Pull Request debe pertenecer al repositorio destino de la tarea."
+                                    "The pull request must target the task's destination repository."
                                 )
                             supabase.rpc(
                                 "submit_task_pr",
@@ -2059,38 +2112,38 @@ else:
                                 )
                                 if check_data.get("status") == "merged":
                                     st.success(
-                                        "GitHub confirma el merge; la tarea "
-                                        "se completó."
+                                        "GitHub confirmed the merge. The task "
+                                        "is complete."
                                     )
                                 elif check_data.get("status") == "closed":
                                     st.warning(
-                                        "La PR se cerró sin merge; la tarea "
-                                        "volvió a estar disponible."
+                                        "The pull request was closed without a merge. "
+                                        "The task is available again."
                                     )
                                 else:
                                     st.success(
-                                        "Pull Request registrada. GitHub "
-                                        "notificará el merge automáticamente."
+                                        "Pull request registered. GitHub will "
+                                        "notify KelDev when it is merged."
                                     )
                             except Exception as e:
                                 report_problem(
                                     "Consulta inicial del estado en GitHub"
                                 )
                                 st.warning(
-                                    "La Pull Request se registró, pero no se "
-                                    "pudo consultar su estado inicial. El "
-                                    "webhook detectará cambios futuros."
+                                    "The pull request was registered, but its "
+                                    "initial status could not be checked. The "
+                                    "webhook will detect future changes."
                                 )
                             invalidate_user_overview()
                             st.rerun()
                         except ValueError as e:
                             st.warning(str(e))
                         except Exception as e:
-                            report_problem("Envío de entrega")
+                            report_problem("Submitting the task")
 
-    # --- ESTADO DE ENTREGAS ---
-    elif opcion == "Mis Entregas":
-        st.subheader("Estado de mis entregas")
+    # --- SUBMISSION STATUS ---
+    elif opcion == "My Submissions":
+        st.subheader("My submissions")
         try:
             res_contribs = (
                 supabase.table("contributions")
@@ -2103,26 +2156,26 @@ else:
                 .execute()
             )
             if not res_contribs.data:
-                st.info("Todavía no has enviado ninguna entrega.")
+                st.info("You have not submitted any work yet.")
             else:
                 status_labels = {
-                    "changes_requested": "Cambios solicitados; puedes volver a enviar",
-                    "completed": "Completada",
+                    "changes_requested": "Changes requested — you can resubmit",
+                    "completed": "Completed",
                 }
                 for contribution in res_contribs.data:
                     with st.container(border=True):
-                        st.markdown(f"### Tarea #{contribution['task_id']}")
+                        st.markdown(f"### Task #{contribution['task_id']}")
                         st.caption(
-                            f"Estado: "
-                            f"{status_labels.get(contribution['workflow_state'], contribution['estado'])}"
+                            f"Status: "
+                            f"{status_labels.get(contribution['workflow_state'], task_status_label(contribution['estado']))}"
                         )
                         code_url = (
                             contribution.get("code_url")
                             or contribution.get("github_pr_url")
                         )
                         if code_url:
-                            st.link_button("Abrir entrega", code_url)
+                            st.link_button("Open submission", code_url)
                         if contribution.get("creator_feedback"):
                             st.warning(contribution["creator_feedback"])
         except Exception as e:
-            report_problem("Carga de entregas")
+            report_problem("Loading submissions")

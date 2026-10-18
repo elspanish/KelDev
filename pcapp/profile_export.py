@@ -17,6 +17,25 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+DIFFICULTY_LABELS = {
+    "Fácil": "Easy",
+    "Medio": "Medium",
+    "Difícil": "Hard",
+}
+
+STATUS_LABELS = {
+    "pendiente_revision": "Pending review",
+    "aceptada": "Accepted",
+    "rechazada": "Rejected",
+    "en_progreso": "In progress",
+    "en_revision": "In review",
+    "completada": "Completed",
+    "cambios_solicitados": "Changes requested",
+    "completed": "Completed",
+    "changes_requested": "Changes requested",
+    "rejected": "Rejected",
+}
+
 
 def build_profile_pdf(profile, collaborations, issued_at=None):
     """Build a formal, printable profile and contribution-history PDF."""
@@ -32,9 +51,9 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=15 * mm,
-        title="Informe profesional - KelDev",
+        title="Professional profile - KelDev",
         author="KelDev",
-        subject="Perfil y colaboraciones",
+        subject="Profile and contributions",
     )
     base_styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -92,28 +111,28 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
     story = [
         Paragraph("KelDev", title_style),
         Paragraph(
-            "INFORME PROFESIONAL DE COLABORACIÓN Y HABILIDADES",
+            "PROFESSIONAL CONTRIBUTOR PROFILE",
             subtitle_style,
         ),
     ]
 
     identity_rows = [
         [
-            Paragraph("<b>Nombre</b>", body_style),
+            Paragraph("<b>Name</b>", body_style),
             Paragraph(escape(str(profile.get("nombre") or "—")), body_style),
-            Paragraph("<b>Correo</b>", body_style),
+            Paragraph("<b>Email</b>", body_style),
             Paragraph(escape(str(profile.get("email") or "—")), body_style),
         ],
         [
-            Paragraph("<b>Fecha de emisión</b>", body_style),
-            Paragraph(issued_at.astimezone().strftime("%d/%m/%Y %H:%M %Z"), body_style),
-            Paragraph("<b>Cuenta</b>", body_style),
+            Paragraph("<b>Issued</b>", body_style),
+            Paragraph(issued_at.astimezone().strftime("%Y-%m-%d %H:%M %Z"), body_style),
+            Paragraph("<b>Account ID</b>", body_style),
             Paragraph(escape(str(profile.get("id") or "—")), body_style),
         ],
         [
-            Paragraph("<b>Reputación total</b>", body_style),
+            Paragraph("<b>Total reputation</b>", body_style),
             Paragraph(str(int(profile.get("reputacion") or 0)), body_style),
-            Paragraph("<b>Tareas completadas</b>", body_style),
+            Paragraph("<b>Tasks completed</b>", body_style),
             Paragraph(str(int(profile.get("tareas_completadas") or 0)), body_style),
         ],
     ]
@@ -135,7 +154,7 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
     if description:
         description_table = Table(
             [[
-                Paragraph("<b>Presentación</b>", body_style),
+                Paragraph("<b>About</b>", body_style),
                 Paragraph(escape(description), body_style),
             ]],
             colWidths=[30 * mm, 220 * mm],
@@ -150,20 +169,20 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]))
         story.extend([description_table, Spacer(1, 4)])
-    story.append(Paragraph("Perfil de habilidades", section_style))
+    story.append(Paragraph("Skill profile", section_style))
 
     if skills:
         skill_rows = [[
-            Paragraph("<b>Habilidad</b>", cell_style),
-            Paragraph("<b>Reputación</b>", cell_style),
-            Paragraph("<b>Estado</b>", cell_style),
+            Paragraph("<b>Skill</b>", cell_style),
+            Paragraph("<b>Reputation</b>", cell_style),
+            Paragraph("<b>Status</b>", cell_style),
         ]]
         skill_rows.extend(
             [
                 Paragraph(escape(skill), cell_style),
                 Paragraph(str(int(score_map.get(skill) or 0)), cell_style),
                 Paragraph(
-                    "En perfil" if skill in active_skills else "Histórica",
+                    "Active" if skill in active_skills else "Historical",
                     cell_style,
                 ),
             ]
@@ -187,16 +206,16 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
         ]))
         story.append(skill_table)
     else:
-        story.append(Paragraph("No hay habilidades registradas.", body_style))
+        story.append(Paragraph("No skills have been added yet.", body_style))
 
-    story.append(Paragraph("Historial de colaboraciones", section_style))
+    story.append(Paragraph("Contribution history", section_style))
     if collaborations:
         rows = [[
-            Paragraph("<b>Tarea / proyecto</b>", cell_style),
-            Paragraph("<b>Estado</b>", cell_style),
-            Paragraph("<b>Dificultad</b>", cell_style),
-            Paragraph("<b>Reputación por habilidad</b>", cell_style),
-            Paragraph("<b>Fecha</b>", cell_style),
+            Paragraph("<b>Task / project</b>", cell_style),
+            Paragraph("<b>Status</b>", cell_style),
+            Paragraph("<b>Difficulty</b>", cell_style),
+            Paragraph("<b>Reputation by skill</b>", cell_style),
+            Paragraph("<b>Date</b>", cell_style),
         ]]
         for item in collaborations:
             task = item.get("task") or {}
@@ -213,11 +232,11 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
                 item.get("workflow_state") == "completed"
                 and item.get("reputacion_detalle_completo")
             ):
-                detail_text = "0 puntos (sin habilidades coincidentes)"
+                detail_text = "0 points (no matching skills)"
             elif item.get("workflow_state") == "completed":
-                detail_text = "Desglose histórico no disponible"
+                detail_text = "Historical breakdown unavailable"
             else:
-                detail_text = "Sin reputación otorgada"
+                detail_text = "No reputation awarded"
             created = item.get("created_at") or ""
             if isinstance(created, str):
                 created = created[:10]
@@ -232,25 +251,36 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
                     delivery_reference = (
                         '<br/><link href="'
                         + escape(str(delivery_url))
-                        + '" color="#2563eb">Ver entrega en GitHub</link>'
+                        + '" color="#2563eb">Open GitHub submission</link>'
                     )
                 else:
                     delivery_reference = (
-                        "<br/>Entrega: " + escape(str(delivery_url))
+                        "<br/>Submission: " + escape(str(delivery_url))
                     )
             rows.append([
                 Paragraph(
-                    f"<b>{escape(str(task.get('titulo') or 'Tarea'))}"
+                    f"<b>{escape(str(task.get('titulo') or 'Task'))}"
                     f" (#{escape(str(item.get('task_id') or '—'))})</b>"
                     f"<br/>{escape(str(project.get('titulo') or ''))}"
                     f"{delivery_reference}",
                     cell_style,
                 ),
                 Paragraph(
-                    escape(str(item.get("estado_label") or item.get("estado") or "—")),
+                    escape(str(
+                        item.get("estado_label")
+                        or STATUS_LABELS.get(
+                            item.get("estado"), item.get("estado") or "—"
+                        )
+                    )),
                     cell_style,
                 ),
-                Paragraph(escape(str(task.get("dificultad") or "—")), cell_style),
+                Paragraph(
+                    escape(str(DIFFICULTY_LABELS.get(
+                        task.get("dificultad"),
+                        task.get("dificultad") or "—",
+                    ))),
+                    cell_style,
+                ),
                 Paragraph(detail_text, cell_style),
                 Paragraph(escape(str(created or "—")), cell_style),
             ])
@@ -272,13 +302,13 @@ def build_profile_pdf(profile, collaborations, issued_at=None):
         ]))
         story.append(contribution_table)
     else:
-        story.append(Paragraph("No hay colaboraciones registradas.", body_style))
+        story.append(Paragraph("No contributions have been recorded.", body_style))
 
     story.extend([
         Spacer(1, 10),
         KeepTogether(Paragraph(
-            "Documento generado automáticamente por KelDev a partir "
-            "de los datos registrados en la plataforma en la fecha indicada.",
+            "Automatically generated by KelDev from the platform data available "
+            "on the issue date.",
             subtitle_style,
         )),
     ])

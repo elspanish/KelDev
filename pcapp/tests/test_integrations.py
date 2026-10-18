@@ -123,6 +123,22 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         })
         self.assertEqual(task["habilidades_requeridas"], ["Python", "SQL"])
 
+    def test_normalizes_english_difficulty_to_the_database_value(self):
+        task = _clean_task({
+            "titulo": "Add task search",
+            "habilidades_requeridas": ["Python"],
+            "instrucciones": "Add a searchable task list.",
+            "objetivo": "Contributors can find relevant work.",
+            "restricciones": "Keep server-side skill matching unchanged.",
+            "entregables": "Search controls and tests.",
+            "recursos": "Streamlit documentation.",
+            "criterios_aceptacion": "Search returns matching tasks.",
+            "modo_entrega": "Direct GitHub pull request.",
+            "duracion_estimada_horas": 4,
+            "dificultad": "Hard",
+        })
+        self.assertEqual(task["dificultad"], "Difícil")
+
     def test_rejects_task_without_title(self):
         with self.assertRaises(ValueError):
             _clean_task({"habilidades_requeridas": []})
@@ -141,7 +157,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             "duracion_estimada_horas": 9,
             "dificultad": "Extrema",
         }
-        with self.assertRaisesRegex(ValueError, "Fácil, Medio o Difícil"):
+        with self.assertRaisesRegex(ValueError, "Easy, Medium, or Hard"):
             _clean_task(task)
 
     def test_rejects_duration_longer_than_one_person_day(self):
@@ -158,7 +174,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             "duracion_estimada_horas": 9,
             "dificultad": "Medio",
         }
-        with self.assertRaisesRegex(ValueError, "1 a 8 horas"):
+        with self.assertRaisesRegex(ValueError, "1 to 8 hours"):
             _clean_task(task)
 
     def test_prompt_bounds_single_person_estimates_and_uses_project_inputs(self):
@@ -166,23 +182,25 @@ class GeneratedTaskValidationTests(unittest.TestCase):
             "Gestor de tareas",
             "Una aplicación web para organizar tareas personales.",
         )
-        self.assertIn("Título del proyecto: Gestor de tareas", prompt)
+        self.assertIn("Project title: Gestor de tareas", prompt)
         self.assertIn(
-            "Descripción del proyecto: Una aplicación web para organizar "
+            "Project description: Una aplicación web para organizar "
             "tareas personales.",
             prompt,
         )
-        self.assertIn("máximo de 8 horas", prompt)
+        self.assertIn("at most 8 hours", prompt)
         self.assertIn('"duracion_estimada_horas"', prompt)
         self.assertIn('"dificultad"', prompt)
         self.assertIn('"criterios_aceptacion"', prompt)
         self.assertIn('"restricciones"', prompt)
         self.assertIn('"entregables"', prompt)
         self.assertIn('"repositorio_url"', prompt)
-        self.assertIn("no la pongas en modo_entrega", prompt)
-        self.assertIn("Pull Request directa del colaborador", prompt)
-        self.assertIn("No diseñes pasos de revisión entre pares", prompt)
-        self.assertIn("No incluyas en el JSON campos de flujo de revisión", prompt)
+        self.assertIn("do not put that URL in modo_entrega", prompt)
+        self.assertIn("direct pull request from the contributor", prompt)
+        self.assertIn("Do not design peer-review steps", prompt)
+        self.assertIn("Do not add review workflow or review deadline", prompt)
+        self.assertIn("Use English for all generated text.", prompt)
+        self.assertIn('"dificultad": "Medium"', prompt)
 
     def test_uses_groq_key_from_streamlit_secrets(self):
         with (
@@ -240,7 +258,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         call = client.chat.completions.create.call_args.kwargs
         self.assertEqual(call["model"], "llama-3.1-8b-instant")
         self.assertEqual(call["response_format"], {"type": "json_object"})
-        self.assertIn("Título del proyecto: App", call["messages"][0]["content"])
+        self.assertIn("Project title: App", call["messages"][0]["content"])
 
     def test_falls_back_to_google_when_groq_request_fails(self):
         with (
@@ -329,7 +347,7 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         self.assertEqual(tasks[0]["duracion_estimada_horas"], 3)
         self.assertEqual(tasks[0]["dificultad"], "Fácil")
         call = client.models.generate_content.call_args.kwargs
-        self.assertIn("Título del proyecto: App", call["contents"])
+        self.assertIn("Project title: App", call["contents"])
         self.assertEqual(
             call["config"].response_mime_type,
             "application/json",
