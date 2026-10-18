@@ -3,7 +3,11 @@
 Welcome to **KelDev**! KelDev is an open-source platform where developers solve real-world tasks via GitHub Pull Requests, earn skill reputation points, and generate verified skill certificates. 
 
 > 🧪 **KelDev is currently in Beta:** We genuinely need your feedback! Tell us EVERYTHING you think — the good, the bad, and the features you wish existed!
-
+>
+>**How to share your feedback:**
+> - 💬 **GitHub Discussions / Issues:** [Open an Issue](https://github.com/elspanish/Platform/issues) or start a discussion right here on GitHub!
+> - 👾 **Discord:** Join our community[Join community(https://discord.gg/U8HakWKYF)].
+> - 🤖 **Reddit:** Drop a comment on our launch post or send a DM to `u/keldevelop`
 ---
 
 ## ⚡ How It Works (Contributor Workflow)
