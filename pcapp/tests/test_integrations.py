@@ -180,6 +180,9 @@ class GeneratedTaskValidationTests(unittest.TestCase):
         self.assertIn('"entregables"', prompt)
         self.assertIn('"repositorio_url"', prompt)
         self.assertIn("no la pongas en modo_entrega", prompt)
+        self.assertIn("Pull Request directa del colaborador", prompt)
+        self.assertIn("No diseñes pasos de revisión entre pares", prompt)
+        self.assertIn("No incluyas en el JSON campos de flujo de revisión", prompt)
 
     def test_uses_groq_key_from_streamlit_secrets(self):
         with (

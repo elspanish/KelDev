@@ -180,6 +180,12 @@ para todas las tareas y no la pongas en modo_entrega. Usa modo_entrega solo
 para explicar qué cambios, pruebas y evidencias debe incluir la Pull Request.
 Si la descripción no incluye un repositorio, deja repositorio_url vacío.
 
+En KelDev, cada entrega se envía como una Pull Request directa del colaborador
+al repositorio destino de la tarea. No diseñes pasos de revisión entre pares,
+aprobación final del creador ni una segunda Pull Request creada por el creador.
+No incluyas en el JSON campos de flujo de revisión ni plazos de revisión; usa
+únicamente la estructura indicada arriba.
+
 Título del proyecto: {title}
 Descripción del proyecto: {description}
 """.strip()
