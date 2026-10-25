@@ -24,6 +24,13 @@ las tareas manualmente.
 1. Enlaza el CLI de Supabase y ejecuta `supabase db push`. La migración
    `20261014143000_platform_dev_consolidated.sql` crea o actualiza el esquema,
    el catálogo compartido de habilidades y las funciones de reputación.
+   `20261023153100_enable_lazy_anonymous_access.sql` permite navegar proyectos,
+   tareas disponibles y habilidades sin iniciar sesión, y protege la
+   personalización asociada al perfil temporal. En Supabase Auth, habilita
+   **Allow anonymous sign-ins** antes de usar la personalización: la aplicación
+   solo crea esa sesión cuando el visitante guarda preferencias o su perfil.
+   Reclamar tareas y publicar proyectos requiere una cuenta permanente; la
+   base de datos también bloquea esas operaciones para sesiones anónimas.
    `20261016170000_claim_task_respects_module_assignments.sql` evita aceptar
    una tarea mientras el usuario tiene un módulo en progreso.
    Si este proyecto ya aplicó las versiones anteriores, consolida primero su

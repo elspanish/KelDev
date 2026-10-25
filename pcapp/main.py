@@ -205,6 +205,41 @@ def profile_skill_names(value):
     )
 
 
+def is_anonymous_user(user=None):
+    user = user or st.session_state.get("user")
+    if user is None:
+        return False
+    anonymous_status = getattr(user, "is_anonymous", None)
+    if anonymous_status is not None:
+        return bool(anonymous_status)
+    app_metadata = getattr(user, "app_metadata", None) or {}
+    return app_metadata.get("provider") == "anonymous"
+
+
+def ensure_anonymous_user():
+    if st.session_state.get("user") is not None:
+        return st.session_state.user
+    try:
+        response = supabase.auth.sign_in_anonymously()
+        if response.user is None:
+            raise RuntimeError("Supabase did not return an anonymous user.")
+        st.session_state.user = response.user
+        return response.user
+    except Exception as error:
+        report_problem("Starting an anonymous session", error)
+        return None
+
+
+def redirect_anonymous_user(action):
+    if not is_anonymous_user():
+        return
+    st.session_state.account_prompt = (
+        f"Create a permanent account or sign in before you can {action}."
+    )
+    st.session_state.opcion_actual = "Account"
+    st.rerun()
+
+
 def load_skill_catalog():
     response = (
         supabase.table("skill_catalog")
@@ -667,59 +702,267 @@ if st.session_state.user is None and st.query_params.get("code"):
         report_problem("Completing GitHub sign-in")
 
 # ---------------------------------------------------------
-# SCREEN 1: AUTHENTICATION (SIGN IN / REGISTRATION)
+# SCREEN 1: PUBLIC WORKSPACE AND ACCOUNT ACCESS
 # ---------------------------------------------------------
 if st.session_state.user is None:
     st.title("KelDev")
     st.caption("Collaborate, build projects, and grow your skills.")
+    guest_pages = ("Explore", "Personalize", "Create Project", "Account")
+    previous_guest_page = st.session_state.get("guest_page", "Explore")
+    guest_page = st.radio(
+        "Navigation",
+        guest_pages,
+        index=(
+            guest_pages.index(previous_guest_page)
+            if previous_guest_page in guest_pages
+            else 0
+        ),
+        horizontal=True,
+    )
+    st.session_state.guest_page = guest_page
 
-   
-    tab_login, tab_registro = st.tabs(["Sign in", "Create account"])
+    if guest_page == "Explore":
+        st.subheader("Explore the community")
+        try:
+            projects = (
+                supabase.table("projects")
+                .select("id,titulo,descripcion,created_at")
+                .order("created_at", desc=True)
+                .limit(50)
+                .execute()
+                .data
+                or []
+            )
+            tasks = (
+                supabase.table("tasks")
+                .select(
+                    "id,project_id,titulo,habilidades_requeridas,objetivo,"
+                    "dificultad,estado"
+                )
+                .eq("estado", "pendiente")
+                .order("created_at", desc=True)
+                .limit(100)
+                .execute()
+                .data
+                or []
+            )
+            catalog = load_skill_catalog()
+        except Exception as error:
+            report_problem("Loading public projects and tasks", error)
+            projects, tasks, catalog = [], [], []
 
-    with tab_login:
-        with st.container(border=True):
-            st.subheader("Welcome back")
-            email = st.text_input("Email", key="login_email")
-            password = st.text_input("Password", type="password", key="login_pass")
-
-            if st.button("Sign in", type="primary", width="stretch"):
-                try:
-                    res = supabase.auth.sign_in_with_password(
-                        {"email": email, "password": password}
+        selected_skills = st.session_state.get("guest_skill_preferences", [])
+        if selected_skills:
+            selected_names = {skill.casefold() for skill in selected_skills}
+            tasks = [
+                task for task in tasks
+                if selected_names.intersection(
+                    skill.casefold()
+                    for skill in profile_skill_names(
+                        task.get("habilidades_requeridas")
                     )
-                    st.session_state.user = res.user
-                    st.success("You are signed in.")
+                )
+            ]
+        with st.expander("Personalize task matching"):
+            with st.form("guest_task_preferences"):
+                task_skills = st.multiselect(
+                    "Skills to match",
+                    options=catalog,
+                    default=[
+                        skill for skill in selected_skills
+                        if skill in catalog
+                    ],
+                    help=(
+                        "Saving these preferences creates a temporary "
+                        "anonymous profile so they are available next time."
+                    ),
+                )
+                save_task_preferences = st.form_submit_button(
+                    "Save preferences and filter tasks"
+                )
+            if save_task_preferences:
+                guest_user = ensure_anonymous_user()
+                if guest_user is not None:
+                    try:
+                        update_response = (
+                            supabase.table("profiles")
+                            .update({"habilidades": task_skills})
+                            .eq("id", guest_user.id)
+                            .select("id")
+                            .execute()
+                        )
+                        if not update_response.data:
+                            raise RuntimeError(
+                                "The anonymous profile could not be updated."
+                            )
+                        st.session_state.guest_skill_preferences = task_skills
+                        st.session_state.pop("overview_user_id", None)
+                        st.rerun()
+                    except Exception as error:
+                        report_problem("Saving task preferences", error)
+
+        project_titles = {
+            project["id"]: project["titulo"] for project in projects
+        }
+        st.markdown("### Available tasks")
+        if not tasks:
+            st.info("There are no available tasks matching these skills.")
+        for task in tasks:
+            with st.container(border=True):
+                st.markdown(f"**{task['titulo']}**")
+                st.caption(
+                    f"{project_titles.get(task['project_id'], 'Project')} · "
+                    f"{task.get('dificultad') or 'Difficulty not set'}"
+                )
+                st.write(task.get("objetivo") or "No goal provided.")
+                st.write(
+                    "Required skills: "
+                    + ", ".join(
+                        profile_skill_names(task.get("habilidades_requeridas"))
+                    )
+                )
+                if st.button(
+                    "Claim this task",
+                    key=f"guest_claim_task_{task['id']}",
+                    type="primary",
+                ):
+                    st.session_state.account_prompt = (
+                        "Create a permanent account or sign in before you can "
+                        "claim a task."
+                    )
+                    st.session_state.guest_page = "Account"
                     st.rerun()
-                except Exception:
-                    report_problem("Signing in")
 
-    with tab_registro:
-        with st.container(border=True):
-            st.subheader("Join the community")
-            reg_email = st.text_input("Email", key="reg_email")
-            reg_password = st.text_input(
-                "Password", type="password", key="reg_pass"
-            )
-            reg_nombre = st.text_input(
-                "Developer name", key="reg_nombre"
-            )
+        st.markdown("### Public projects")
+        if not projects:
+            st.info("No projects have been published yet.")
+        for project in projects:
+            with st.container(border=True):
+                st.markdown(f"**{project['titulo']}**")
+                st.write(project.get("descripcion") or "No description.")
+                st.caption(f"Project {project['id']}")
 
-            if st.button("Create account", type="primary", width="stretch"):
+    elif guest_page == "Personalize":
+        st.subheader("Personalize your profile")
+        st.info(
+            "You can browse without an account. Saving your profile creates "
+            "a temporary anonymous Supabase account and stores your skills "
+            "and preferences with it."
+        )
+        try:
+            catalog = load_skill_catalog()
+        except Exception as error:
+            report_problem("Loading the skill catalog", error)
+            catalog = []
+        with st.form("guest_profile_preferences"):
+            guest_name = st.text_input(
+                "Developer name",
+                value=st.session_state.get("guest_profile_name", ""),
+            )
+            guest_description = st.text_area(
+                "Profile description",
+                value=st.session_state.get("guest_profile_description", ""),
+            )
+            guest_skills = st.multiselect(
+                "Your skills and task preferences",
+                options=catalog,
+                default=[
+                    skill for skill in st.session_state.get(
+                        "guest_skill_preferences", []
+                    )
+                    if skill in catalog
+                ],
+            )
+            save_guest_profile = st.form_submit_button(
+                "Save profile and preferences",
+                type="primary",
+            )
+        if save_guest_profile:
+            guest_user = ensure_anonymous_user()
+            if guest_user is not None:
                 try:
-                    res = supabase.auth.sign_up(
-                        {
-                            "email": reg_email,
-                            "password": reg_password,
-                            "options": {"data": {"nombre": reg_nombre.strip()}},
-                        }
+                    update_response = (
+                        supabase.table("profiles")
+                        .update({
+                            "nombre": guest_name.strip(),
+                            "descripcion": guest_description.strip(),
+                            "habilidades": guest_skills,
+                        })
+                        .eq("id", guest_user.id)
+                        .select("id")
+                        .execute()
                     )
-                    st.success(
-                        "Account created. Check your inbox to confirm your "
-                        "email before signing in. Your profile is created "
-                        "automatically."
+                    if not update_response.data:
+                        raise RuntimeError(
+                            "The anonymous profile could not be updated."
+                        )
+                    st.session_state.guest_profile_name = guest_name.strip()
+                    st.session_state.guest_profile_description = (
+                        guest_description.strip()
                     )
-                except Exception:
-                    report_problem("Registering a user")
+                    st.session_state.guest_skill_preferences = guest_skills
+                    st.session_state.opcion_actual = "My Profile"
+                    st.rerun()
+                except Exception as error:
+                    report_problem("Saving profile preferences", error)
+
+    elif guest_page == "Create Project":
+        st.session_state.account_prompt = (
+            "Create a permanent account or sign in before creating a project."
+        )
+        st.session_state.guest_page = "Account"
+        st.rerun()
+
+    else:
+        st.subheader("Sign in or create an account")
+        if prompt := st.session_state.pop("account_prompt", None):
+            st.info(prompt)
+        tab_login, tab_registro = st.tabs(["Sign in", "Create account"])
+        with tab_login:
+            with st.container(border=True):
+                st.subheader("Welcome back")
+                email = st.text_input("Email", key="login_email")
+                password = st.text_input(
+                    "Password", type="password", key="login_pass"
+                )
+                if st.button("Sign in", type="primary", width="stretch"):
+                    try:
+                        res = supabase.auth.sign_in_with_password(
+                            {"email": email, "password": password}
+                        )
+                        st.session_state.user = res.user
+                        st.success("You are signed in.")
+                        st.rerun()
+                    except Exception:
+                        report_problem("Signing in")
+        with tab_registro:
+            with st.container(border=True):
+                st.subheader("Join the community")
+                reg_email = st.text_input("Email", key="reg_email")
+                reg_password = st.text_input(
+                    "Password", type="password", key="reg_pass"
+                )
+                reg_nombre = st.text_input("Developer name", key="reg_nombre")
+                if st.button(
+                    "Create account", type="primary", width="stretch"
+                ):
+                    try:
+                        res = supabase.auth.sign_up(
+                            {
+                                "email": reg_email,
+                                "password": reg_password,
+                                "options": {
+                                    "data": {"nombre": reg_nombre.strip()}
+                                },
+                            }
+                        )
+                        st.success(
+                            "Account created. Check your inbox to confirm your "
+                            "email before signing in. Your profile is created "
+                            "automatically."
+                        )
+                    except Exception:
+                        report_problem("Registering a user")
 
 # ---------------------------------------------------------
 # SCREEN 2: MAIN WORKSPACE
@@ -748,6 +991,7 @@ else:
 
     opciones = {
         "My Profile": "My Profile",
+        "Account": "Account",
         "Create Project": "Create Project",
         "Find Work": "Find Work",
         "Submit Task": "Submit Task",
@@ -763,7 +1007,11 @@ else:
         st.caption("Build in the open, together.")
         st.divider()
         st.markdown("**Signed in as**")
-        st.write(st.session_state.user.email)
+        st.write(
+            "Anonymous account"
+            if is_anonymous_user()
+            else st.session_state.user.email
+        )
         st.divider()
         st.markdown("**Navigation**")
         for etiqueta, destino in opciones.items():
@@ -796,8 +1044,60 @@ else:
     st.caption("Manage your projects and contributions in one place.")
     st.divider()
 
+    if opcion == "Account":
+        st.subheader("Account")
+        if is_anonymous_user():
+            if prompt := st.session_state.pop("account_prompt", None):
+                st.warning(prompt)
+            st.info(
+                "Your temporary profile and preferences are stored with this "
+                "anonymous account. Create a permanent account here to keep "
+                "them under the same user ID."
+            )
+            with st.form("upgrade_anonymous_account"):
+                account_email = st.text_input("Email", key="upgrade_email")
+                account_password = st.text_input(
+                    "Password",
+                    type="password",
+                    key="upgrade_password",
+                )
+                account_name = st.text_input(
+                    "Developer name",
+                    value=perfil_actual.get("nombre") or "",
+                    key="upgrade_name",
+                )
+                complete_registration = st.form_submit_button(
+                    "Create permanent account",
+                    type="primary",
+                )
+            if complete_registration:
+                if not account_name.strip():
+                    st.warning("Developer name cannot be empty.")
+                else:
+                    try:
+                        response = supabase.auth.update_user({
+                            "email": account_email,
+                            "password": account_password,
+                            "data": {"nombre": account_name.strip()},
+                        })
+                        if response.user is None:
+                            raise RuntimeError(
+                                "Supabase did not return the updated account."
+                            )
+                        st.session_state.user = response.user
+                        st.success(
+                            "Account details updated. Confirm your email if "
+                            "Supabase requires confirmation."
+                        )
+                        st.rerun()
+                    except Exception:
+                        report_problem("Completing account registration")
+        else:
+            st.success("You are using a permanent account.")
+            st.write(st.session_state.user.email)
+
     # --- MY PROFILE ---
-    if opcion == "My Profile":
+    elif opcion == "My Profile":
         try:
             perfil_res = (
                 supabase.table("profiles")
@@ -831,11 +1131,16 @@ else:
 
                 nombre = perfil.get("nombre") or "Developer"
                 reputacion_total = int(perfil.get("reputacion") or 0)
+                account_identity = (
+                    perfil.get("email")
+                    or st.session_state.user.email
+                    or "Temporary anonymous profile"
+                )
                 with st.container(border=True):
                     st.markdown(f"### Hello, {nombre}")
                     st.caption(
                         f"Welcome to the community · "
-                        f"{perfil.get('email') or st.session_state.user.email}"
+                        f"{account_identity}"
                     )
                     metric_col, completed_col = st.columns(2)
                     with metric_col:
@@ -1144,6 +1449,7 @@ else:
                     },
                 )
                 if st.button("Publish project and modules", type="primary"):
+                    redirect_anonymous_user("create and publish a project")
                     modules_to_save = []
                     errors = []
                     for index, module in enumerate(module_drafts, start=1):
@@ -1439,6 +1745,7 @@ else:
                         drafted_titles[index] = title
 
             if st.button("Save project and tasks", type="primary"):
+                redirect_anonymous_user("create and publish a project")
                 if not proj_titulo.strip() or not proj_desc.strip():
                     st.warning("Enter a project name and description.")
                 elif not edited_tasks:
@@ -1694,6 +2001,9 @@ else:
                                             key=f"claim_task_{task['id']}",
                                             type="primary",
                                         ):
+                                            redirect_anonymous_user(
+                                                "claim a task"
+                                            )
                                             try:
                                                 supabase.rpc(
                                                     "claim_task",
@@ -2029,6 +2339,9 @@ else:
                         key=f"claim_module_{module['id']}",
                         type="primary",
                     ):
+                        redirect_anonymous_user(
+                            "claim a project module"
+                        )
                         try:
                             supabase.rpc(
                                 "claim_project_module",
