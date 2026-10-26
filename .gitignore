@@ -8,4 +8,4 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-README.md
+supabase/.temp/
